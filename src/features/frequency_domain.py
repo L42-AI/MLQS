@@ -1,5 +1,7 @@
 """Frequency-domain feature extractors — FFT-based spectral features."""
 
+from typing import Callable
+
 import numpy as np
 from scipy import signal
 
@@ -50,7 +52,7 @@ def compute_band_energy_ratios(values, frequency_bands=None, fs=100.0):
     }
 
 
-FEATURE_REGISTRY: dict[str, callable] = {
+FEATURE_REGISTRY: dict[str, Callable] = {
     "dominant_frequency": dominant_frequency,
     "spectral_centroid": spectral_centroid,
     "spectral_rolloff": spectral_rolloff,
