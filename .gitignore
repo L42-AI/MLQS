@@ -9,11 +9,6 @@ wheels/
 # Virtual environments
 .venv
 
-# Data (raw exports, processed artifacts — too large for git)
-src/data/raw/
-src/data/processed/
-src/data/features/
-
 
 # Notebook checkpoints
 .ipynb_checkpoints/
