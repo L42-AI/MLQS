@@ -19,6 +19,7 @@ class PipelineResult:
     feature_matrix: pd.DataFrame
     labels: pd.Series | None
     feature_names: list[str]
+    groups: pd.Series | None = None
 
 
 IMPUTATION_METHOD_TO_FUNCTION = {
@@ -40,10 +41,11 @@ def run_feature_pipeline(
     preprocessing_config = experiment_config.preprocessing
 
     label_column = "label" if "label" in processed_data.columns else None
+    non_sensor_columns = {"label", "experiment_id"}
     sensor_columns = [
         column
         for column in processed_data.select_dtypes(include="number").columns
-        if column != label_column
+        if column not in non_sensor_columns
     ]
     if not sensor_columns:
         return PipelineResult(feature_matrix=pd.DataFrame(), labels=None, feature_names=[])
@@ -79,6 +81,12 @@ def run_feature_pipeline(
         else None
     )
 
+    extracted_groups = (
+        extracted_features.pop("experiment_id")
+        if "experiment_id" in extracted_features.columns
+        else None
+    )
+
     if experiment_config.features.selection_methods and extracted_labels is not None:
         extracted_features = run_selection_pipeline(
             extracted_features,
@@ -90,4 +98,5 @@ def run_feature_pipeline(
         feature_matrix=extracted_features,
         labels=extracted_labels,
         feature_names=extracted_features.columns.tolist(),
+        groups=extracted_groups,
     )

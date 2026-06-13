@@ -75,7 +75,7 @@ def load_all_experiment_sensors(
 
     experiment_dataframes: list[pd.DataFrame] = []
 
-    for experiment_directory in sorted(raw_data_directory.iterdir()):
+    for experiment_id, experiment_directory in enumerate(sorted(raw_data_directory.iterdir())):
         if not experiment_directory.is_dir():
             continue
 
@@ -94,6 +94,7 @@ def load_all_experiment_sensors(
         if detected_label is not None:
             merged_sensor_data["label"] = detected_label.value
 
+        merged_sensor_data["experiment_id"] = experiment_id
         experiment_dataframes.append(merged_sensor_data)
 
     if not experiment_dataframes:

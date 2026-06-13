@@ -68,6 +68,7 @@ def extract_features_from_windows(
 
     feature_rows: list[dict[str, float]] = []
     window_labels: list[str] = []
+    window_experiment_ids: list[int] = []
 
     for window_id in window_ids:
         window_data = windows.loc[window_id]
@@ -95,10 +96,15 @@ def extract_features_from_windows(
         if "label" in window_data.columns:
             window_labels.append(str(window_data["label"].iloc[0]))
 
+        if "experiment_id" in window_data.columns:
+            window_experiment_ids.append(int(window_data["experiment_id"].iloc[0]))
+
     if not feature_rows:
         return pd.DataFrame()
 
     extracted_features = pd.DataFrame(feature_rows)
     if window_labels:
         extracted_features["label"] = window_labels
+    if window_experiment_ids:
+        extracted_features["experiment_id"] = window_experiment_ids
     return extracted_features

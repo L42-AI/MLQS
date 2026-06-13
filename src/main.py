@@ -37,7 +37,7 @@ def _run_exploratory_analysis(experiment_config: Config) -> None:
 
 def _run_feature_extraction_pipeline(
     experiment_config: Config,
-) -> tuple[np.ndarray, np.ndarray | None]:
+) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
     sensor_data = load_all_experiment_sensors(
         experiment_config.raw_dir,
         resample_rule=experiment_config.preprocessing.resample_rule,
@@ -51,21 +51,24 @@ def _run_feature_extraction_pipeline(
     print(f"Features: {pipeline_result.feature_matrix.shape[1]}")
 
     extracted_labels = pipeline_result.labels
+    extracted_groups = pipeline_result.groups
+
     if extracted_labels is not None:
         label_encoder = LabelEncoder()
         encoded_labels = label_encoder.fit_transform(extracted_labels)
         print(
             f"Classes:  {dict(zip(label_encoder.classes_, range(len(label_encoder.classes_))))}"
         )
-        return pipeline_result.feature_matrix.values, encoded_labels
-    return pipeline_result.feature_matrix.values, None
+        groups_array = extracted_groups.values if extracted_groups is not None else None
+        return pipeline_result.feature_matrix.values, encoded_labels, groups_array
+    return pipeline_result.feature_matrix.values, None, None
 
 
 def _train_and_evaluate_classical_models(
-    feature_matrix: np.ndarray, encoded_labels: np.ndarray
+    feature_matrix: np.ndarray, encoded_labels: np.ndarray, groups: np.ndarray | None = None
 ) -> None:
     X_train, X_test, y_train, y_test = split_train_test_data(
-        feature_matrix, encoded_labels, test_fraction=0.2
+        feature_matrix, encoded_labels, test_fraction=0.2, groups=groups
     )
     all_model_results = {}
 
@@ -93,7 +96,7 @@ def _train_and_evaluate_classical_models(
 
 
 def _train_and_evaluate_deep_model(
-    feature_matrix: np.ndarray, encoded_labels: np.ndarray
+    feature_matrix: np.ndarray, encoded_labels: np.ndarray, groups: np.ndarray | None = None
 ) -> None:
     try:
         import torch
@@ -104,7 +107,7 @@ def _train_and_evaluate_deep_model(
     from models.deep import build_deep_classifier, prepare_sequences, train_deep_model
 
     X_train, X_test, y_train, y_test = split_train_test_data(
-        feature_matrix, encoded_labels, test_fraction=0.2
+        feature_matrix, encoded_labels, test_fraction=0.2, groups=groups
     )
 
     sequence_length = min(32, len(X_train) // 10)
@@ -161,15 +164,15 @@ def main() -> None:
         _run_exploratory_analysis(experiment_config)
         return
 
-    feature_matrix, encoded_labels = _run_feature_extraction_pipeline(experiment_config)
+    feature_matrix, encoded_labels, groups = _run_feature_extraction_pipeline(experiment_config)
     if encoded_labels is None:
         print("No labels found — skipping model training")
         return
 
     if parsed_args.model == "classical":
-        _train_and_evaluate_classical_models(feature_matrix, encoded_labels)
+        _train_and_evaluate_classical_models(feature_matrix, encoded_labels, groups)
     elif parsed_args.model == "deep":
-        _train_and_evaluate_deep_model(feature_matrix, encoded_labels)
+        _train_and_evaluate_deep_model(feature_matrix, encoded_labels, groups)
 
 
 if __name__ == "__main__":
