@@ -5,7 +5,19 @@ build/
 dist/
 wheels/
 *.egg-info
-.DS_Store
 
 # Virtual environments
 .venv
+
+# Data (raw exports, processed artifacts — too large for git)
+data/raw/
+data/processed/
+data/features/
+
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
