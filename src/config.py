@@ -24,6 +24,7 @@ class PreprocessingConfig:
 class FeatureConfig:
     window_size: float = 2.0
     window_overlap: float = 0.5
+    frequency_window_size: float | None = field(default=None)
     time_domain: bool = True
     frequency_domain: bool = True
     statistical: bool = True
