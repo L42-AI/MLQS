@@ -12,7 +12,14 @@ wheels/
 
 # Notebook checkpoints
 .ipynb_checkpoints/
+
+.cache
+.config
+.local
+.npm
+
 Dockerfile
+run_docker.sh
 
 # OS files
 .DS_Store
