@@ -10,9 +10,9 @@ wheels/
 .venv
 
 # Data (raw exports, processed artifacts — too large for git)
-data/raw/
-data/processed/
-data/features/
+src/data/raw/
+src/data/processed/
+src/data/features/
 
 
 # Notebook checkpoints
