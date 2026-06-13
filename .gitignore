@@ -13,6 +13,7 @@ wheels/
 # Notebook checkpoints
 .ipynb_checkpoints/
 
+.tmp
 .cache
 .config
 .local
