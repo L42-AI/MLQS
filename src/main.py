@@ -12,7 +12,7 @@ import torch
 from sklearn.preprocessing import LabelEncoder
 
 
-from config import Config
+from config import Config, PreprocessingConfig, FeatureConfig, ModelConfig
 from data.loader import compute_sensor_summary, detect_data_quality_issues, load_all_experiment_sensors
 from models.classical import build_classifier, split_train_test_data
 from models.deep import build_deep_classifier, prepare_sequences, train_deep_model
@@ -155,7 +155,11 @@ def main() -> None:
     argument_parser.add_argument("--eda", action="store_true", help="EDA only")
     parsed_args = argument_parser.parse_args()
 
-    experiment_config = Config()
+    experiment_config = Config(
+        preprocessing=PreprocessingConfig(),
+        features=FeatureConfig(),
+        models=ModelConfig(),
+    )
 
     if parsed_args.eda:
         _run_exploratory_analysis(experiment_config)
