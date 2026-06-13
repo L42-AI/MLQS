@@ -8,13 +8,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import argparse
 
 import numpy as np
+import torch
 from sklearn.preprocessing import LabelEncoder
+
 
 from config import Config
 from data.loader import compute_sensor_summary, detect_data_quality_issues, load_all_experiment_sensors
 from models.classical import build_classifier, split_train_test_data
+from models.deep import build_deep_classifier, prepare_sequences, train_deep_model
 from models.evaluation import compute_classification_metrics, rank_model_performances
 from pipeline.builder import run_feature_pipeline
+
 
 
 def _run_exploratory_analysis(experiment_config: Config) -> None:
@@ -98,13 +102,6 @@ def _train_and_evaluate_classical_models(
 def _train_and_evaluate_deep_model(
     feature_matrix: np.ndarray, encoded_labels: np.ndarray, groups: np.ndarray | None = None
 ) -> None:
-    try:
-        import torch
-    except ImportError:
-        print("Install torch: pip install torch")
-        return
-
-    from models.deep import build_deep_classifier, prepare_sequences, train_deep_model
 
     X_train, X_test, y_train, y_test = split_train_test_data(
         feature_matrix, encoded_labels, test_fraction=0.2, groups=groups
