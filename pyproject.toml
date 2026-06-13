@@ -1,7 +1,7 @@
 [project]
 name = "mlqs"
 version = "0.1.0"
-description = "Add your description here"
+description = "ML pipeline for phyphox phone/watch sensor data — preprocessing, feature engineering, and model evaluation"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
