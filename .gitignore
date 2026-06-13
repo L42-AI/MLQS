@@ -12,6 +12,7 @@ wheels/
 
 # Notebook checkpoints
 .ipynb_checkpoints/
+Dockerfile
 
 # OS files
 .DS_Store

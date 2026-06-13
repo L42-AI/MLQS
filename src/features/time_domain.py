@@ -26,7 +26,7 @@ def mean_crossing_rate(values):
 
 
 def absolute_integral(values):
-    return float(np.trapz(np.abs(values)))
+    return float(np.trapezoid(np.abs(values)))
 
 
 def linear_slope(values):
