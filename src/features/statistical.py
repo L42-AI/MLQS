@@ -1,6 +1,6 @@
 """Statistical feature extractors — distribution shape, complexity, entropy."""
 
-import warnings
+from typing import Callable
 
 import numpy as np
 from scipy import stats
@@ -9,17 +9,13 @@ from scipy import stats
 def skewness(values):
     if np.std(values) < 1e-12:
         return 0.0
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        return float(stats.skew(values, bias=False))
+    return float(stats.skew(values, bias=False))
 
 
 def kurtosis(values):
     if np.std(values) < 1e-12:
         return -3.0
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        return float(stats.kurtosis(values, bias=False))
+    return float(stats.kurtosis(values, bias=False))
 
 
 def shannon_entropy(values, num_bins=10):
@@ -48,7 +44,7 @@ def interquartile_range(values):
     return float(np.percentile(values, 75) - np.percentile(values, 25))
 
 
-FEATURE_REGISTRY: dict[str, callable] = {
+FEATURE_REGISTRY: dict[str, Callable] = {
     "skewness": skewness,
     "kurtosis": kurtosis,
     "shannon_entropy": shannon_entropy,
