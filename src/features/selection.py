@@ -117,11 +117,10 @@ def run_selection_pipeline(
     feature_matrix: pd.DataFrame,
     labels: pd.Series,
     selection_methods: list[str],
-    **kwargs,
 ) -> pd.DataFrame:
     reduced_features = feature_matrix.copy()
     for method_name in selection_methods:
         selector_fn = SELECTION_METHOD_NAME_TO_FUNCTION.get(method_name)
         if selector_fn is not None:
-            reduced_features = selector_fn(reduced_features, labels, **kwargs)
+            reduced_features = selector_fn(reduced_features, labels)
     return reduced_features

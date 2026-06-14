@@ -12,14 +12,13 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from config import Config, SensorWindowConfig
+from config import SensorWindowConfig
 from features import frequency_domain, statistical, time_domain
 from features.cross_sensor import (
     DEFAULT_CROSS_SENSOR_PAIRS,
     compute_cross_sensor_features,
 )
 from features.windowing import create_sliding_windows
-from utils.convert import resample_rule_to_frequency_hz
 
 
 def context_bounds(
@@ -150,12 +149,9 @@ def _window_labels_and_ids(window_data: pd.DataFrame):
 def extract_features_from_windows(
     sensor_data: pd.DataFrame,
     sensor_columns: list[str],
-    config: Config,
+    feature_config,
+    sample_rate: float,
 ) -> pd.DataFrame:
-    feature_config = config.features
-    sample_rate = resample_rule_to_frequency_hz(
-        config.preprocessing.resample_rule
-    )
     total_samples = len(sensor_data)
 
     windows = create_sliding_windows(

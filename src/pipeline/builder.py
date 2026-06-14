@@ -26,13 +26,13 @@ class PipelineResult:
 
 
 IMPUTATION_METHOD_TO_FUNCTION = {
-    "interpolate": lambda data, config, columns: interpolate_linear(
-        data, max_gap=config.imputation_max_gap, columns=columns
+    "interpolate": lambda data, max_gap, columns: interpolate_linear(
+        data, max_gap=max_gap, columns=columns
     ),
-    "ffill": lambda data, config, columns: forward_fill(
-        data, max_gap=config.imputation_max_gap, columns=columns
+    "ffill": lambda data, max_gap, columns: forward_fill(
+        data, max_gap=max_gap, columns=columns
     ),
-    "knn": lambda data, config, columns: knn_impute(data, columns=columns),
+    "knn": lambda data, max_gap, columns: knn_impute(data, columns=columns),
 }
 
 
@@ -88,7 +88,7 @@ def run_feature_pipeline(
         preprocessing.imputation_method,
         IMPUTATION_METHOD_TO_FUNCTION["interpolate"],
     )
-    data = impute(data, preprocessing, sensor_columns)
+    data = impute(data, max_gap=preprocessing.imputation_max_gap, columns=sensor_columns)
 
     # ── Magnitude channels (rotation-invariant) ───────────────────────
     if features_config.magnitude_channels:
@@ -96,7 +96,7 @@ def run_feature_pipeline(
         sensor_columns = _sensor_columns(data)
 
     # ── Feature extraction ────────────────────────────────────────────
-    features = extract_features_from_windows(data, sensor_columns, experiment_config)
+    features = extract_features_from_windows(data, sensor_columns, features_config, sample_rate)
     if features.empty:
         return PipelineResult(feature_matrix=pd.DataFrame(), labels=None, feature_names=[])
 
