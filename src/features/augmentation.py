@@ -12,7 +12,7 @@ import pandas as pd
 
 # Sensors whose _x,_y,_z columns can be combined into a magnitude.
 # HeartRate (1-channel bpm) and WatchOrientation (angles/quaternions) are excluded.
-THREE_AXIS_SENSORS: tuple[str, ...] = (
+_THREE_AXIS_SENSORS: tuple[str, ...] = (
     "Accelerometer",
     "AccelerometerUncalibrated",
     "Gyroscope",
@@ -28,7 +28,7 @@ THREE_AXIS_SENSORS: tuple[str, ...] = (
 def _sensors_with_all_axes(sensor_data: pd.DataFrame) -> list[str]:
     """Return sensors that have _x, _y, _z columns in the data."""
     found = []
-    for sensor in THREE_AXIS_SENSORS:
+    for sensor in _THREE_AXIS_SENSORS:
         if all(f"{sensor}_{axis}" in sensor_data.columns for axis in ("x", "y", "z")):
             found.append(sensor)
     return found

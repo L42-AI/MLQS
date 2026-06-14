@@ -22,29 +22,28 @@ from features.windowing import create_sliding_windows
 from utils.convert import resample_rule_to_frequency_hz
 
 
-def compute_context_window_indices(
+def context_bounds(
     window_id: int,
-    window_size_seconds: float,
-    overlap_fraction: float,
-    sampling_rate_hz: float,
-    freq_window_size_seconds: float,
+    anchor_size: float,
+    overlap: float,
+    sample_rate: float,
+    context_size: float,
     total_samples: int,
 ) -> tuple[int, int]:
-    """Return (start, end) of a context window centred on the anchor window.
+    """Return (start, end) of a context window centred on the anchor.
 
-    When *freq_window_size_seconds* equals *window_size_seconds* the
-    context is the anchor window itself.  Result is clamped to the data
-    bounds.
+    When *context_size* equals *anchor_size* the context is the anchor
+    window itself.  Result is clamped to the data bounds.
     """
-    win_len = int(round(window_size_seconds * sampling_rate_hz))
-    slide = int(round(win_len * (1.0 - overlap_fraction)))
+    win_len = int(round(anchor_size * sample_rate))
+    slide = int(round(win_len * (1.0 - overlap)))
     start = window_id * slide
 
-    if freq_window_size_seconds == window_size_seconds:
+    if context_size == anchor_size:
         return (start, start + win_len)
 
     centre = start + win_len // 2
-    ctx_len = int(round(freq_window_size_seconds * sampling_rate_hz))
+    ctx_len = int(round(context_size * sample_rate))
     ctx_start = centre - ctx_len // 2
     ctx_end = ctx_start + ctx_len
 
@@ -124,7 +123,7 @@ def _readings_for_column(
     The context is centred on the anchor window position, giving slower
     signals (e.g. heart rate) more data without changing the grid.
     """
-    start, end = compute_context_window_indices(
+    start, end = context_bounds(
         window_id, anchor_size, overlap, sample_rate, context_size, total_samples,
     )
     segment = sensor_data.iloc[start:end]
