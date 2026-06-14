@@ -2,6 +2,11 @@
 
 Takes the merged multi-sensor DataFrame, windows it, and extracts
 all registered features from each sensor column.
+
+Supports **per-sensor context windows** so that slowly-varying signals
+(e.g. heart rate, 30 s context) can use larger extraction windows than
+fast motion sensors (e.g. gyroscope, 2 s), while keeping a single
+anchor grid for temporal alignment across all sensors.
 """
 
 from __future__ import annotations
@@ -9,8 +14,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from config import Config
+from config import Config, SensorWindowConfig
 from features import frequency_domain, statistical, time_domain
+from features.cross_sensor import (
+    DEFAULT_CROSS_SENSOR_PAIRS,
+    compute_cross_sensor_features,
+)
 from features.windowing import create_sliding_windows
 from utils.convert import resample_rule_to_frequency_hz
 
@@ -54,6 +63,33 @@ def compute_context_window_indices(
         ctx_start = 0
 
     return (ctx_start, min(ctx_end, total_samples))
+
+
+def _parse_sensor_name(column_name: str) -> str:
+    """Extract sensor name from a flattened column like ``HeartRate_bpm``.
+
+    The merged DataFrame uses ``{sensor_name}_{axis}`` naming (e.g.
+    ``Accelerometer_x``, ``HeartRate_bpm``, ``WatchOrientation_qx``).
+    """
+    return column_name.rsplit("_", 1)[0]
+
+
+def _resolve_window_config(
+    sensor_name: str,
+    feature_config,
+) -> tuple[float, float | None]:
+    """Return ``(base_window, freq_window)`` for *sensor_name*.
+
+    Falls back to the global ``FeatureConfig.window_size`` /
+    ``FeatureConfig.frequency_window_size`` when no per-sensor override
+    exists in ``FeatureConfig.sensor_windows``.
+    """
+    override: SensorWindowConfig | None = feature_config.sensor_windows.get(
+        sensor_name
+    )
+    if override is not None:
+        return override.base_window_seconds, override.freq_window_seconds
+    return feature_config.window_size, feature_config.frequency_window_size
 
 
 def _extract_features_for_column(
@@ -110,12 +146,14 @@ def extract_features_from_windows(
     window_ids = windows.index.get_level_values("window").unique()
     total_samples = len(merged_sensor_data)
 
-    freq_window_size = feature_config.frequency_window_size
-    use_multi_resolution = (
-        freq_window_size is not None
-        and freq_window_size != feature_config.window_size
-    )
+    # ── Pre-compute effective window sizes per sensor column ──────────
+    # Maps column name → (base_window, freq_window) via sensor name lookup.
+    col_window_config: dict[str, tuple[float, float | None]] = {}
+    for col in sensor_columns:
+        sensor_name = _parse_sensor_name(col)
+        col_window_config[col] = _resolve_window_config(sensor_name, feature_config)
 
+    # ── Per-window, per-sensor feature extraction ─────────────────────
     feature_rows: list[dict[str, float]] = []
     window_labels: list[str] = []
     window_experiment_ids: list[int] = []
@@ -124,44 +162,50 @@ def extract_features_from_windows(
         window_data = windows.loc[window_id]
         feature_row: dict[str, float] = {}
 
-        if use_multi_resolution:
+        for sensor_column in sensor_columns:
+            if sensor_column not in merged_sensor_data.columns:
+                continue
+
+            base_win, freq_win = col_window_config[sensor_column]
+            effective_win = freq_win if freq_win is not None else base_win
+
+            # Sensor-specific context window (centred on anchor position)
             ctx_start, ctx_end = compute_context_window_indices(
                 window_id,
                 window_size_seconds=feature_config.window_size,
                 overlap_fraction=feature_config.window_overlap,
                 sampling_rate_hz=sample_rate_hz,
-                freq_window_size_seconds=freq_window_size,
+                freq_window_size_seconds=effective_win,
                 total_samples=total_samples,
             )
-            freq_context = merged_sensor_data.iloc[ctx_start:ctx_end]
+            context_data = merged_sensor_data.iloc[ctx_start:ctx_end]
 
-        for sensor_column in sensor_columns:
-            if sensor_column not in merged_sensor_data.columns:
-                continue
-
-            base_readings = (
-                window_data[sensor_column].dropna().values.astype(float)
-                if sensor_column in window_data.columns
+            sensor_readings = (
+                context_data[sensor_column].dropna().values.astype(float)
+                if sensor_column in context_data.columns
                 else np.array([], dtype=float)
             )
-            if len(base_readings) < 2:
+            if len(sensor_readings) < 2:
                 continue
 
-            freq_readings: np.ndarray | None = None
-            if use_multi_resolution and sensor_column in freq_context.columns:
-                freq_readings = (
-                    freq_context[sensor_column].dropna().values.astype(float)
-                )
-                if len(freq_readings) < 2:
-                    freq_readings = None
-
+            # All feature types (time, freq, statistical) are computed
+            # from the same sensor-specific context.
             feature_row.update(
                 _extract_features_for_column(
-                    base_readings,
+                    sensor_readings,
                     f"{sensor_column}__",
                     feature_config,
                     sample_rate_hz,
-                    freq_readings=freq_readings,
+                )
+            )
+
+        # ── Cross-sensor relationship features ─────────────────────────
+        # Uses magnitude columns (added by augmentation) within the anchor
+        # window to compare pocket vs wrist movement synchronisation.
+        if feature_config.cross_sensor_features:
+            feature_row.update(
+                compute_cross_sensor_features(
+                    window_data, pairs=DEFAULT_CROSS_SENSOR_PAIRS
                 )
             )
 

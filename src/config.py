@@ -21,10 +21,28 @@ class PreprocessingConfig:
 
 
 @dataclass
+class SensorWindowConfig:
+    """Per-sensor override for feature extraction window sizes.
+
+    Attributes:
+        base_window_seconds: Context window length for time-domain and
+            statistical features.  Larger values (e.g. 30 s for heart rate)
+            capture slower dynamics that would be invisible in a short window.
+        freq_window_seconds: Separate (usually larger) context for
+            frequency-domain features.  ``None`` → same as *base_window_seconds*.
+    """
+    base_window_seconds: float
+    freq_window_seconds: float | None = None
+
+
+@dataclass
 class FeatureConfig:
     window_size: float = 2.0
     window_overlap: float = 0.5
     frequency_window_size: float | None = field(default=None)
+    sensor_windows: dict[str, SensorWindowConfig] = field(default_factory=dict)
+    magnitude_channels: bool = True
+    cross_sensor_features: bool = True
     time_domain: bool = True
     frequency_domain: bool = True
     statistical: bool = True

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from config import Config
+from features.augmentation import add_magnitude_channels
 from features.engineering import extract_features_from_windows
 from features.selection import run_selection_pipeline
 from preprocessing.missing import forward_fill, interpolate_linear, knn_impute
@@ -68,6 +69,15 @@ def run_feature_pipeline(
         IMPUTATION_METHOD_TO_FUNCTION["interpolate"],
     )
     processed_data = impute_fn(processed_data, preprocessing_config, sensor_columns)
+
+    # ── Orientation-robust magnitude channels ─────────────────────────
+    if experiment_config.features.magnitude_channels:
+        processed_data = add_magnitude_channels(processed_data)
+        sensor_columns = [
+            column
+            for column in processed_data.select_dtypes(include="number").columns
+            if column not in non_sensor_columns
+        ]
 
     extracted_features = extract_features_from_windows(
         processed_data, sensor_columns, experiment_config
