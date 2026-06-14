@@ -1,8 +1,8 @@
-"""Data augmentation — add derived channels before feature extraction.
+"""Add sqrt(x²+y²+z²) magnitude channels for every 3-axis sensor.
 
-Currently provides orientation-robust magnitude channels for 3-axis
-sensors, making features less sensitive to device rotation and more
-directly reflective of overall movement intensity.
+Magnitude is rotation-invariant — it captures total movement intensity
+regardless of device orientation.  Features derived from magnitude are
+more directly comparable across differently-worn devices.
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-# 3-axis sensors whose _x,_y,_z columns we can combine into a magnitude.
-# Excludes HeartRate (1-channel bpm) and WatchOrientation (angles/quaternions).
+# Sensors whose _x,_y,_z columns can be combined into a magnitude.
+# HeartRate (1-channel bpm) and WatchOrientation (angles/quaternions) are excluded.
 THREE_AXIS_SENSORS: tuple[str, ...] = (
     "Accelerometer",
     "AccelerometerUncalibrated",
@@ -25,58 +25,29 @@ THREE_AXIS_SENSORS: tuple[str, ...] = (
 )
 
 
-def _collect_existing_axis_sensors(
-    sensor_data: pd.DataFrame,
-    candidates: tuple[str, ...] = THREE_AXIS_SENSORS,
-) -> list[str]:
-    """Return sensors from *candidates* that have all three axis columns present."""
-    existing: list[str] = []
-    for sensor in candidates:
+def _sensors_with_all_axes(sensor_data: pd.DataFrame) -> list[str]:
+    """Return sensors that have _x, _y, _z columns in the data."""
+    found = []
+    for sensor in THREE_AXIS_SENSORS:
         if all(f"{sensor}_{axis}" in sensor_data.columns for axis in ("x", "y", "z")):
-            existing.append(sensor)
-    return existing
+            found.append(sensor)
+    return found
 
 
-def add_magnitude_channels(
-    sensor_data: pd.DataFrame,
-    sensors: tuple[str, ...] | None = None,
-) -> pd.DataFrame:
-    """Add ``sqrt(x² + y² + z²)`` magnitude columns for each 3-axis sensor.
+def add_magnitude_channels(sensor_data: pd.DataFrame) -> pd.DataFrame:
+    """Add ``sqrt(x² + y² + z²)`` columns for every 3-axis sensor present.
 
-    Parameters
-    ----------
-    sensor_data:
-        Merged sensor DataFrame with ``{sensor}_{axis}`` column naming
-        (e.g. ``Accelerometer_x``, ``Gyroscope_y``).
-    sensors:
-        Subset of 3-axis sensors to augment.  ``None`` → all known
-        3-axis sensors that have columns in the data.
-
-    Returns
-    -------
-    A new DataFrame with additional ``{sensor}_magnitude`` columns.
-    The original data is not mutated.
-
-    Notes
-    -----
-    Magnitude channels are rotation-invariant — they capture the total
-    signal intensity regardless of device orientation.  This is directly
-    relevant for distinguishing activity levels (no/soft/hard movement).
+    Returns a new DataFrame (the original is not mutated).
     """
-    if sensors is None:
-        sensors_to_process = _collect_existing_axis_sensors(sensor_data)
-    else:
-        sensors_to_process = [s for s in sensors if s in _collect_existing_axis_sensors(sensor_data)]
-
-    if not sensors_to_process:
+    sensors = _sensors_with_all_axes(sensor_data)
+    if not sensors:
         return sensor_data.copy()
 
     result = sensor_data.copy()
-    for sensor in sensors_to_process:
+    for sensor in sensors:
         x = result[f"{sensor}_x"].values
         y = result[f"{sensor}_y"].values
         z = result[f"{sensor}_z"].values
-        magnitude = np.sqrt(x * x + y * y + z * z)
-        result[f"{sensor}_magnitude"] = magnitude
+        result[f"{sensor}_magnitude"] = np.sqrt(x * x + y * y + z * z)
 
     return result

@@ -39,7 +39,7 @@ class SensorWindowConfig:
 class FeatureConfig:
     window_size: float = 2.0
     window_overlap: float = 0.5
-    frequency_window_size: float | None = field(default=None)
+    frequency_window_size: float | None = None
     sensor_windows: dict[str, SensorWindowConfig] = field(default_factory=dict)
     magnitude_channels: bool = True
     cross_sensor_features: bool = True
