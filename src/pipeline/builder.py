@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from config import Config
@@ -23,6 +24,7 @@ class PipelineResult:
     labels: pd.Series | None
     feature_names: list[str]
     groups: pd.Series | None = None
+    block_ids: pd.Series | None = None
 
 
 IMPUTATION_METHOD_TO_FUNCTION = {
@@ -115,4 +117,148 @@ def run_feature_pipeline(
         labels=labels,
         feature_names=features.columns.tolist(),
         groups=groups,
+    )
+
+
+# ── Block-based train/test split (no overlapping windows) ──────────────────
+
+
+def _split_blocks(data: pd.DataFrame, n_blocks: int) -> list[pd.DataFrame]:
+    """Split a time series into *n_blocks* contiguous blocks."""
+    total = len(data)
+    block_size = total // n_blocks
+    blocks: list[pd.DataFrame] = []
+    for i in range(n_blocks):
+        start = i * block_size
+        end = start + block_size if i < n_blocks - 1 else total
+        blocks.append(data.iloc[start:end].copy())
+    return blocks
+
+
+def _preprocess(
+    data: pd.DataFrame,
+    config: Config,
+    sensor_columns: list[str],
+    sample_rate: float,
+) -> pd.DataFrame:
+    """Apply filtering, imputation, and magnitude augmentation."""
+    pp = config.preprocessing
+    fc = config.features
+
+    if pp.filter_method:
+        data = apply_filter_to_columns(
+            data, sensor_columns,
+            filter_method=pp.filter_method,
+            cutoff_frequency=pp.filter_cutoff,
+            sample_rate_hz=sample_rate,
+            filter_order=pp.filter_order,
+            filter_type=pp.filter_type,
+        )
+
+    impute = IMPUTATION_METHOD_TO_FUNCTION.get(
+        pp.imputation_method,
+        IMPUTATION_METHOD_TO_FUNCTION["interpolate"],
+    )
+    data = impute(data, max_gap=pp.imputation_max_gap, columns=sensor_columns)
+
+    if fc.magnitude_channels:
+        data = add_magnitude_channels(data)
+
+    return data
+
+
+def run_train_test_pipeline(
+    merged_sensor_data: pd.DataFrame,
+    experiment_config: Config,
+    test_fraction: float = 0.2,
+    n_blocks: int = 10,
+    random_seed: int = 42,
+) -> tuple[PipelineResult, PipelineResult]:
+    """Preprocess → split into blocks → window each block → train/test.
+
+    The raw time series is divided into *n_blocks* contiguous blocks,
+    shuffled, and assigned to train/test.  Each block is **windowed
+    independently**, guaranteeing **zero overlapping samples** between
+    train and test windows (no data leakage).
+
+    Returns
+    -------
+    (train_result, test_result)
+        Each ``PipelineResult`` contains the feature matrix, labels,
+        groups, and feature names for its respective split.
+    """
+    data = merged_sensor_data.copy()
+    preprocessing = experiment_config.preprocessing
+    features_config = experiment_config.features
+
+    sensor_columns = _sensor_columns(data)
+    if not sensor_columns:
+        empty = PipelineResult(feature_matrix=pd.DataFrame(), labels=None, feature_names=[])
+        return empty, empty
+
+    sample_rate = resample_rule_to_frequency_hz(preprocessing.resample_rule)
+
+    # ── Preprocess (filter, impute, augment) ────────────────────────────
+    data = _preprocess(data, experiment_config, sensor_columns, sample_rate)
+    sensor_columns = _sensor_columns(data)
+
+    # ── Split into blocks, shuffle, window independently ───────────────
+    blocks = _split_blocks(data, n_blocks)
+    rng = np.random.RandomState(random_seed)
+    rng.shuffle(blocks)
+
+    block_results: list[pd.DataFrame] = []
+    for block_id, block in enumerate(blocks):
+        feats = extract_features_from_windows(
+            block, sensor_columns, features_config, sample_rate,
+            block_info=f"{block_id + 1}/{n_blocks}",
+        )
+        if not feats.empty:
+            feats["_block_id"] = block_id
+            block_results.append(feats)
+
+    if not block_results:
+        empty = PipelineResult(feature_matrix=pd.DataFrame(), labels=None, feature_names=[])
+        return empty, empty
+
+    # ── Assign blocks to train/test ─────────────────────────────────────
+    split_idx = max(1, int(len(block_results) * (1.0 - test_fraction)))
+    train_blocks = block_results[:split_idx]
+    test_blocks = block_results[split_idx:]
+
+    train_df = pd.concat(train_blocks, ignore_index=True)
+    test_df = pd.concat(test_blocks, ignore_index=True)
+
+    # ── Pop metadata + block_ids ────────────────────────────────────────
+    train_labels, train_groups, train_features = _pop_metadata(train_df)
+    train_block_ids = train_features.pop("_block_id") if "_block_id" in train_features.columns else None
+
+    test_labels, test_groups, test_features = _pop_metadata(test_df)
+    test_block_ids = test_features.pop("_block_id") if "_block_id" in test_features.columns else None
+
+    # ── Feature selection (fit on train, transform both) ────────────────
+    if features_config.selection_methods and train_labels is not None:
+        train_features = run_selection_pipeline(
+            train_features, train_labels,
+            selection_methods=list(features_config.selection_methods),
+        )
+        # Apply same column selection to test (columns that survived on train)
+        common_cols = [c for c in train_features.columns if c in test_features.columns]
+        test_features = test_features[common_cols]
+
+    return (
+        PipelineResult(
+            feature_matrix=train_features,
+            labels=train_labels,
+            feature_names=train_features.columns.tolist(),
+            groups=train_groups,
+            block_ids=train_block_ids,
+        ),
+        PipelineResult(
+            feature_matrix=test_features,
+            labels=test_labels,
+            feature_names=test_features.columns.tolist(),
+            groups=test_groups,
+            block_ids=test_block_ids,
+        ),
     )
