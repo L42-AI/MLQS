@@ -57,8 +57,9 @@ def forward_fill(
 
 def knn_impute(
     sensor_data: pd.DataFrame,
-    n_neighbors: int = 5,
+    max_gap: int | None = None,      # ignored — KNN handles all gaps
     columns: list[str] | None = None,
+    n_neighbors: int = 5,
 ) -> pd.DataFrame:
     from sklearn.impute import KNNImputer
 

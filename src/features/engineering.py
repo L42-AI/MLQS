@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from numba import njit
 from tqdm import tqdm
 
 from config import SensorWindowConfig
@@ -20,39 +19,34 @@ from features.cross_sensor import compute_cross_sensor_features
 # ── Context window geometry ─────────────────────────────────────────────────
 
 
-@njit
-def context_bounds(
-    window_id: int,
+def _vectorised_bounds(
+    num_windows: int,
     anchor_size: float,
     overlap: float,
     sample_rate: float,
     context_size: float,
     total_samples: int,
-) -> tuple[int, int]:
-    """Return (start, end) of a context window centred on the anchor window.
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (starts, ends) arrays for all windows at a given context size.
 
-    When *context_size* equals *anchor_size* the context is the anchor window
-    itself.  The result is clamped to ``[0, total_samples)``.
-
-    Compiled with ``@njit`` since this is called O(unique_sizes × windows)
-    times — every nanosecond saved compounds across thousands of calls.
+    Vectorised replacement for the per-window ``context_bounds`` loop.
+    When *context_size* == *anchor_size* the output is trivial (anchor
+    windows).  For larger / smaller contexts each window is centred on
+    the corresponding anchor window and clamped to ``[0, total_samples)``.
     """
     win_len = int(round(anchor_size * sample_rate))
     slide = int(round(win_len * (1.0 - overlap)))
-    start = window_id * slide
+    starts = np.arange(num_windows, dtype=np.intp) * slide
 
     if context_size == anchor_size:
-        return (start, start + win_len)
+        return starts, starts + win_len
 
-    centre = start + win_len // 2
+    centre = starts + win_len // 2
     ctx_len = int(round(context_size * sample_rate))
-    ctx_start = centre - ctx_len // 2
-    if ctx_start < 0:
-        ctx_start = 0
-    if ctx_start + ctx_len > total_samples:
-        ctx_start = max(0, total_samples - ctx_len)
-
-    return (ctx_start, min(ctx_start + ctx_len, total_samples))
+    ctx_starts = centre - ctx_len // 2
+    ctx_starts = np.clip(ctx_starts, 0, total_samples - ctx_len)
+    ends = ctx_starts + ctx_len
+    return ctx_starts, np.minimum(ends, total_samples)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -84,8 +78,8 @@ def _extract_features(
 
     Frequency-domain features share a single PSD computation via
     ``compute_all_frequency_features``.  Time-domain features fuse all 12
-    individual functions into a single pass via ``compute_all_time_domain_features``
-    to share intermediate results (``np.mean``, ``np.diff``, etc.).
+    individual functions into a single pass via ``compute_all_time_domain_features``.
+    Kept for windows that require per-window NaN handling.
     """
     extracted: dict[str, float] = {}
 
@@ -106,6 +100,75 @@ def _extract_features(
             extracted[prefix + name] = fn(readings)
 
     return extracted
+
+
+# ── Column-major batch helpers ──────────────────────────────────────────────
+
+
+def _extract_windows_1d(
+    arr: np.ndarray,
+    starts: np.ndarray,
+    ends: np.ndarray,
+) -> np.ndarray:
+    """Extract windows from a 1-D array into a 2-D ``(num_windows, win_len)`` array.
+
+    All windows must have the same length (``ends - starts`` is constant).
+    Uses ``np.lib.stride_tricks.sliding_window_view`` when windows are
+    contiguous and regularly-spaced (the common case), falling back to
+    index-trickery otherwise.
+    """
+    win_len = int(ends[0] - starts[0])
+    # Fast path: contiguous regularly-spaced windows
+    slide = int(starts[1] - starts[0]) if len(starts) > 1 else win_len
+    if np.all(starts[1:] - starts[:-1] == slide) and ends[-1] <= len(arr):
+        return np.lib.stride_tricks.sliding_window_view(arr, win_len)[::slide][:len(starts)]
+    # General path
+    n = len(starts)
+    idx = starts[:, None] + np.arange(win_len)
+    return arr[idx]
+
+
+def _batch_extract_and_compute(
+    arr: np.ndarray,
+    starts: np.ndarray,
+    ends: np.ndarray,
+    prefix: str,
+    feature_config,
+    sample_rate: float,
+) -> dict[str, np.ndarray]:
+    """Extract all windows from *arr* and compute every enabled feature.
+
+    Time-domain and statistical features are computed in fully vectorised
+    batch form (one call per column).  Frequency features use the original
+    per-window Welch PSD to stay consistent with the established feature
+    definitions (Welch smooths the spectrum differently from a raw FFT).
+
+    Returns a dict ``{feature_name: ndarray of shape (num_windows,)}``.
+    """
+    windows = _extract_windows_1d(arr, starts, ends)
+    out: dict[str, np.ndarray] = {}
+    n_windows = windows.shape[0]
+
+    if feature_config.time_domain:
+        for name, vals in time_domain.compute_batch_time_domain_features(windows).items():
+            out[prefix + name] = vals
+
+    if feature_config.frequency_domain:
+        # Per-window Welch (cannot be fully vectorised across windows)
+        freq_arrays: dict[str, list[float]] = {}
+        for i in range(n_windows):
+            for name, val in frequency_domain.compute_all_frequency_features(
+                windows[i], fs=sample_rate,
+            ).items():
+                freq_arrays.setdefault(name, []).append(val)
+        for name, vals in freq_arrays.items():
+            out[prefix + name] = np.array(vals)
+
+    if feature_config.statistical:
+        for name, vals in statistical.compute_batch_statistical_features(windows).items():
+            out[prefix + name] = vals
+
+    return out
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -131,11 +194,11 @@ def extract_features_from_windows(
     -----
     1. Compute anchor-window positions from window size / overlap.
     2. Group columns by their effective context-window size.
-    3. Pre-compute (start, end) bounds for every (context_size, window) pair.
-    4. Convert each sensor column to a NumPy array.
-    5. Extract features per window (sequentially).
-    6. Attach cross-sensor features.
-    7. Attach ``label`` and ``experiment_id`` from the anchor window.
+    3. Pre-compute (start, end) bounds vectorised per context size.
+    4. For each column, extract *all* windows at once and compute features
+       in batch using vectorised ``compute_batch_*`` functions.
+    5. Columns with NaN values fall back to per-window extraction.
+    6. Attach cross-sensor features, labels, and ``experiment_id``.
 
     Returns
     -------
@@ -164,50 +227,74 @@ def extract_features_from_windows(
         sensor_name = col.rsplit("_", 1)[0]
         col_context[col] = _effective_window_seconds(sensor_name, feature_config)
 
-    # ── 3. Pre-compute context bounds for every (size, window) pair ──────
-    bounds: dict[tuple[float, int], tuple[int, int]] = {}
-    for size in set(col_context.values()):
-        for w_id in range(num_windows):
-            bounds[(size, w_id)] = context_bounds(
-                w_id, anchor_size, overlap, sample_rate, size, total_samples,
-            )
-
-    # ── 4. Convert every sensor column to a NumPy array ──────────────────
-    arrays: dict[str, np.ndarray] = {
-        col: sensor_data[col].to_numpy(dtype=float)
-        for col in col_context
-    }
-    columns: tuple[str, ...] = tuple(col_context.keys())
-
-    # ── 5. Per-window feature extraction ─────────────────────────────────
-    desc = f"Block {block_info}  |  {num_windows} windows" if block_info else f"{num_windows} windows"
-    rows: list[dict[str, float]] = []
-    for w_id in tqdm(range(num_windows), desc=desc, leave=False):
-        row: dict[str, float] = {}
-        for col in columns:
-            s, e = bounds[(col_context[col], w_id)]
-            readings = arrays[col][s:e]
-            readings = readings[~np.isnan(readings)]
-            if len(readings) < 2:
-                continue
-            row.update(_extract_features(readings, f"{col}__", feature_config, sample_rate))
-        rows.append(row)
-
-    if not rows:
+    if not col_context:
         return pd.DataFrame()
 
-    features = pd.DataFrame(rows)
+    # ── 3. Vectorised bounds per context size ────────────────────────────
+    size_bounds: dict[float, tuple[np.ndarray, np.ndarray]] = {}
+    for size in set(col_context.values()):
+        size_bounds[size] = _vectorised_bounds(
+            num_windows, anchor_size, overlap, sample_rate, size, total_samples,
+        )
 
-    # ── 6. Cross-sensor features ─────────────────────────────────────────
+    # ── 4. Convert sensor columns to arrays + check for NaN ──────────────
+    arrays: dict[str, np.ndarray] = {}
+    col_has_nan: dict[str, bool] = {}
+    for col in col_context:
+        arr = sensor_data[col].to_numpy(dtype=float)
+        arrays[col] = arr
+        col_has_nan[col] = bool(np.isnan(arr).any())
+
+    columns: tuple[str, ...] = tuple(col_context.keys())
+
+    # ── 5. Column-major batch feature extraction ─────────────────────────
+    desc = f"Block {block_info}  |  {len(columns)} cols" if block_info else f"{len(columns)} cols"
+    feature_data: dict[str, np.ndarray] = {}
+
+    for idx, col in enumerate(tqdm(columns, desc=desc, leave=False)):
+        starts, ends = size_bounds[col_context[col]]
+
+        if col_has_nan[col]:
+            # Fallback: per-window with NaN masking (rare after imputation)
+            rows: list[dict[str, float]] = []
+            for s, e in zip(starts, ends):
+                segment = arrays[col][s:e]
+                segment = segment[~np.isnan(segment)]
+                if len(segment) < 2:
+                    rows.append({})
+                    continue
+                rows.append(_extract_features(segment, f"{col}__", feature_config, sample_rate))
+
+            # Merge row-oriented dicts into column-oriented arrays
+            if rows:
+                keys = rows[0].keys()
+                for key in keys:
+                    vals = np.array([r.get(key, np.nan) for r in rows])
+                    feature_data[key] = vals
+        else:
+            # Fast batch path
+            result = _batch_extract_and_compute(
+                arrays[col], starts, ends, f"{col}__", feature_config, sample_rate,
+            )
+            feature_data.update(result)
+
+    # ── 6. Build DataFrame ───────────────────────────────────────────────
+    if not feature_data:
+        return pd.DataFrame()
+
+    features = pd.DataFrame(feature_data)
+
+    # ── 7. Cross-sensor features ─────────────────────────────────────────
     if feature_config.cross_sensor_features:
         cross_rows = [
             compute_cross_sensor_features(sensor_data.iloc[s:s + win_len])
             for s in start_indices
         ]
         if cross_rows:
-            features = pd.concat([features, pd.DataFrame(cross_rows)], axis=1)
+            cross_df = pd.DataFrame(cross_rows)
+            features = pd.concat([features, cross_df], axis=1)
 
-    # ── 7. Labels and experiment IDs ─────────────────────────────────────
+    # ── 8. Labels and experiment IDs ─────────────────────────────────────
     if "label" in sensor_data.columns:
         features["label"] = [
             str(v) if pd.notna(v) else None

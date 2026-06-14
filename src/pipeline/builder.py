@@ -28,13 +28,9 @@ class PipelineResult:
 
 
 IMPUTATION_METHOD_TO_FUNCTION = {
-    "interpolate": lambda data, max_gap, columns: interpolate_linear(
-        data, max_gap=max_gap, columns=columns
-    ),
-    "ffill": lambda data, max_gap, columns: forward_fill(
-        data, max_gap=max_gap, columns=columns
-    ),
-    "knn": lambda data, max_gap, columns: knn_impute(data, columns=columns),
+    "interpolate": interpolate_linear,
+    "ffill": forward_fill,
+    "knn": knn_impute,
 }
 
 

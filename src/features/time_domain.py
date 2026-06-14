@@ -33,29 +33,6 @@ def linear_slope(values):
     return float(np.polyfit(np.arange(len(values)), values, 1)[0])
 
 
-FEATURE_NAMES: tuple[str, ...] = (
-    "mean", "std", "variance", "rms",
-    "min", "max", "median", "peak_to_peak",
-    "zero_crossing_rate", "mean_crossing_rate",
-    "abs_integral", "slope",
-)
-
-FEATURE_REGISTRY: dict[str, callable] = {
-    "mean": signal_mean,
-    "std": signal_std,
-    "variance": signal_variance,
-    "rms": signal_rms,
-    "min": signal_minimum,
-    "max": signal_maximum,
-    "median": signal_median,
-    "peak_to_peak": signal_peak_to_peak,
-    "zero_crossing_rate": zero_crossing_rate,
-    "mean_crossing_rate": mean_crossing_rate,
-    "abs_integral": absolute_integral,
-    "slope": linear_slope,
-}
-
-
 # ── Fused / batched variants ────────────────────────────────────────────────
 
 
