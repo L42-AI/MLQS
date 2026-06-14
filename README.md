@@ -24,12 +24,14 @@ MLQS/
     │   ├── missing.py      # interpolate, forward-fill, KNN imputation
     │   └── resample.py     # synchronise_sensor_frames, resample_to_uniform_grid
     ├── features/
-    │   ├── windowing.py    # sliding-window segmentation
-    │   ├── time_domain.py  # mean, variance, skew, kurtosis, zero-crossing-rate …
-    │   ├── frequency_domain.py  # FFT features + band-energy ratios
-    │   ├── statistical.py       # entropy, iqr, mad, percentile range …
-    │   ├── engineering.py       # orchestrator: window → extract → merge
-    │   └── selection.py         # variance threshold + correlation filter
+    │   ├── windowing.py        # sliding-window segmentation
+    │   ├── time_domain.py      # mean, variance, skew, kurtosis, zero-crossing-rate …
+    │   ├── frequency_domain.py # FFT features + band-energy ratios
+    │   ├── statistical.py      # entropy, iqr, mad, percentile range …
+    │   ├── augmentation.py     # orientation-robust magnitude channels
+    │   ├── cross_sensor.py     # pocket‑vs‑wrist relationship features
+    │   ├── engineering.py      # orchestrator: window → extract → merge
+    │   └── selection.py        # variance threshold + correlation filter
     ├── models/
     │   ├── classical.py    # Random Forest, SVM, XGBoost
     │   ├── deep.py         # LSTM / TCN (PyTorch)
@@ -93,25 +95,57 @@ python -m notebooks.05_deep_learning
 
 ## Configuration
 
-Plain Python dataclasses — no YAML. All config lives in `src/config.py`:
+Everything is configured through plain Python dataclasses in `src/config.py` — no YAML, no JSON, no config files. Import, instantiate, and override:
 
 ```python
-from config import Config
+from config import Config, SensorWindowConfig
 
 cfg = Config()
-cfg.raw_dir                         # pathlib.Path → src/data/raw
-cfg.preprocessing.filter_method     # "butterworth" | "moving_average" | "savitzky_golay"
-cfg.preprocessing.imputation_method # "interpolate" | "ffill" | "knn"
-cfg.features.window_size            # seconds (default 2.0)
-cfg.features.selection_methods      # ("variance", "correlation")
-cfg.models.deep_model               # "lstm" | "tcn"
+cfg.preprocessing.filter_method       # "butterworth" | "moving_average" | "savitzky_golay"
+cfg.preprocessing.imputation_method   # "interpolate" | "ffill" | "knn"
+cfg.features.window_size              # global anchor window (seconds, default 2.0)
+cfg.features.magnitude_channels       # add sqrt(x²+y²+z²) columns (default True)
+cfg.features.cross_sensor_features    # pocket‑vs‑wrist relationships (default True)
+cfg.features.selection_methods        # ("variance", "correlation") or empty tuple
+cfg.models.deep_model                 # "lstm" | "tcn"
 ```
 
-Override any field:
+### Per‑sensor overrides
+
+Sensors with different dynamics get their own context window via `sensor_windows`:
+
+```python
+cfg.features.sensor_windows = {
+    "HeartRate": SensorWindowConfig(base_window_seconds=30.0),
+    "WatchOrientation": SensorWindowConfig(
+        base_window_seconds=5.0,
+        freq_window_seconds=10.0,   # separate (larger) window for FFT features
+    ),
+}
+```
+
+Sensors without an override fall back to `window_size` (default 2.0 s). The anchor grid
+stays uniform — every window produces one feature vector — but each sensor reads from
+a context centred on that anchor position.
+
+### Feature toggles
+
+Feature families are independently toggled so you can experiment with subsets:
+
+| Toggle | Default | Effect |
+|---|---|---|
+| `magnitude_channels` | `True` | Adds `sqrt(x²+y²+z²)` columns for every 3‑axis sensor, making features rotation‑invariant |
+| `cross_sensor_features` | `True` | Adds pocket‑vs‑wrist differences, ratios, and correlations per window |
+| `time_domain` | `True` | 12 time‑domain descriptors per channel |
+| `frequency_domain` | `True` | FFT features + band‑energy ratios per channel |
+| `statistical` | `True` | Entropy, Hjorth parameters, IQR per channel |
+
+### Override any field
 
 ```python
 cfg = Config(
-    raw_dir=Path("/custom/path"),
+    preprocessing=PreprocessingConfig(filter_method="savitzky_golay"),
+    features=FeatureConfig(window_size=1.0, magnitude_channels=False),
     models=ModelConfig(deep_epochs=50),
 )
 ```
@@ -125,7 +159,7 @@ phyphox CSVs
 load_all_experiment_sensors()     ← merges phone + watch by time, detects labels
     │
     ▼
-resample_to_uniform_grid()        ← 100 ms grid (configurable)
+resample_to_uniform_grid()        ← 100 ms grid (configurable)
     │
     ▼
 apply_filter_to_columns()         ← noise removal
@@ -134,10 +168,16 @@ apply_filter_to_columns()         ← noise removal
 impute (interpolate / ffill / knn)  ← missing values
     │
     ▼
-create_sliding_windows()          ← 2 s windows, 50 % overlap
+add_magnitude_channels()          ← sqrt(x²+y²+z²) per 3‑axis sensor  [toggle]
     │
     ▼
-extract_features_from_windows()   ← time-domain + frequency-domain + statistical
+create_sliding_windows()          ← anchor grid (default 2 s, 50 % overlap)
+    │
+    ▼
+extract_features_from_windows()
+    ├── per‑column features       ← time + frequency + statistical
+    │     (uses per‑sensor context windows when configured)
+    └── cross‑sensor features     ← pocket‑vs‑wrist diff/ratio/corr  [toggle]
     │
     ▼
 run_selection_pipeline()          ← variance threshold → correlation filter
@@ -180,5 +220,7 @@ Activity labels are inferred from directory names: directories containing `SILEN
 - **Flat functional style** — no classes (except dataclasses), no closures, no inheritance. Functions take data and config, return results.
 - **Dispatch dicts** instead of match/case for imputation method lookup.
 - **Feature registries** — `time_domain.FEATURE_REGISTRY`, `frequency_domain.FEATURE_REGISTRY`, `statistical.FEATURE_REGISTRY` are plain dicts mapping name → function. Adding a feature means adding one entry.
+- **Augmentation as data** — magnitude channels are added as raw columns to the merged DataFrame, so every downstream step (windowing, extraction, selection) handles them automatically.
+- **Cross‑sensor at window level** — pocket‑vs‑wrist relationships are computed per window after per-column extraction, using the magnitude columns already present.
+- **Config drives everything** — `Config` is the single import for all settings. Feature families, per-sensor windows, preprocessing methods, and model hyperparameters all flow from one dataclass tree. No YAML, no environment variables, no scattered constants.
 - **Single-source path** — `consts.SRC` is the absolute `src/` directory. All data directory defaults derive from it.
-- **No YAML/JSON config** — one `config.py`, importable, composable, overridable.
