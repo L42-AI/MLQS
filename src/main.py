@@ -17,7 +17,7 @@ from config import Config, PreprocessingConfig, FeatureConfig, ModelConfig
 from data.loader import compute_sensor_summary, detect_data_quality_issues, load_all_experiment_sensors
 from models.classical import build_classifier
 from models.deep import build_deep_classifier, prepare_sequences, train_deep_model
-from models.evaluation import compute_classification_metrics, rank_model_performances
+from models.evaluation import compute_classification_metrics
 from pipeline.builder import run_train_test_pipeline
 
 
@@ -123,12 +123,14 @@ def _train_and_evaluate_classical_models(
     for model_name, hyperparameters in [
         ("random_forest", {"n_estimators": 100, "max_depth": 10, "random_state": 42}),
         ("svm", {"kernel": "rbf", "C": 1.0, "gamma": "scale", "random_state": 42}),
+        ("xgboost", {"n_estimators": 100, "learning_rate": 0.1, "max_depth": 6, "nthread": 1, "random_state": 42, "verbosity": 0}),
     ]:
-        print(f"\n── {model_name} ──")
+        print(f"\n── {model_name} ──", flush=True)
 
         # ── k-fold block CV ─────────────────────────────────────────────
         if block_ids is not None and len(np.unique(block_ids)) >= 2:
             n_folds = min(5, len(np.unique(block_ids)))
+            print(f"  Running {n_folds}-fold CV ...", flush=True)
             gkf = GroupKFold(n_splits=n_folds)
             fold_accs: list[float] = []
             fold_f1s: list[float] = []
@@ -141,24 +143,23 @@ def _train_and_evaluate_classical_models(
                 metrics = compute_classification_metrics(y_val[val_idx], preds)
                 fold_accs.append(metrics["accuracy"])
                 fold_f1s.append(metrics["f1"])
-                print(f"  Fold {fold}:  acc={metrics['accuracy']:.3f}  f1={metrics['f1']:.3f}")
+                print(f"  Fold {fold}:  acc={metrics['accuracy']:.3f}  f1={metrics['f1']:.3f}", flush=True)
 
             mean_acc = float(np.mean(fold_accs))
             std_acc = float(np.std(fold_accs))
             mean_f1 = float(np.mean(fold_f1s))
             std_f1 = float(np.std(fold_f1s))
             print(f"  CV ({n_folds}-fold):  acc={mean_acc:.3f} ± {std_acc:.3f}  "
-                  f"f1={mean_f1:.3f} ± {std_f1:.3f}")
+                  f"f1={mean_f1:.3f} ± {std_f1:.3f}", flush=True)
         else:
-            # Fewer than 2 blocks — just report CV training score
-            print("  (fewer than 2 blocks — skipping CV)")
+            print("  (fewer than 2 blocks — skipping CV)", flush=True)
 
         # ── Final evaluation on held-out test set ───────────────────────
         classifier = build_classifier(model_name, **hyperparameters).fit(X_val, y_val)
         preds = classifier.predict(X_test)
         proba = classifier.predict_proba(X_test) if hasattr(classifier, "predict_proba") else None
         metrics = compute_classification_metrics(y_test, preds, proba)
-        print(f"  Test:           acc={metrics['accuracy']:.3f}  f1={metrics['f1']:.3f}")
+        print(f"  Test:           acc={metrics['accuracy']:.3f}  f1={metrics['f1']:.3f}", flush=True)
 
 
 def _train_and_evaluate_deep_model(
