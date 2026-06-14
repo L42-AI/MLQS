@@ -14,6 +14,8 @@ from preprocessing.missing import forward_fill, interpolate_linear, knn_impute
 from preprocessing.noise import apply_filter_to_columns
 from utils.convert import resample_rule_to_frequency_hz
 
+NON_SENSOR_COLUMNS = {"label", "experiment_id"}
+
 
 @dataclass
 class PipelineResult:
@@ -34,79 +36,83 @@ IMPUTATION_METHOD_TO_FUNCTION = {
 }
 
 
+def _sensor_columns(data: pd.DataFrame) -> list[str]:
+    """Return numeric column names that aren't labels or metadata."""
+    return [
+        c
+        for c in data.select_dtypes(include="number").columns
+        if c not in NON_SENSOR_COLUMNS
+    ]
+
+
+def _pop_metadata(features: pd.DataFrame):
+    """Extract label and experiment_id columns from *features* (if present).
+
+    Returns (labels, groups, remaining_features).
+    """
+    labels = features.pop("label") if "label" in features.columns else None
+    groups = (
+        features.pop("experiment_id") if "experiment_id" in features.columns else None
+    )
+    return labels, groups, features
+
+
 def run_feature_pipeline(
     merged_sensor_data: pd.DataFrame,
     experiment_config: Config,
 ) -> PipelineResult:
-    processed_data = merged_sensor_data.copy()
-    preprocessing_config = experiment_config.preprocessing
+    data = merged_sensor_data.copy()
+    preprocessing = experiment_config.preprocessing
+    features_config = experiment_config.features
 
-    label_column = "label" if "label" in processed_data.columns else None
-    non_sensor_columns = {"label", "experiment_id"}
-    sensor_columns = [
-        column
-        for column in processed_data.select_dtypes(include="number").columns
-        if column not in non_sensor_columns
-    ]
+    sensor_columns = _sensor_columns(data)
     if not sensor_columns:
         return PipelineResult(feature_matrix=pd.DataFrame(), labels=None, feature_names=[])
 
-    sample_rate_hz = resample_rule_to_frequency_hz(preprocessing_config.resample_rule)
+    sample_rate = resample_rule_to_frequency_hz(preprocessing.resample_rule)
 
-    if preprocessing_config.filter_method:
-        processed_data = apply_filter_to_columns(
-            processed_data,
+    # ── Filtering ─────────────────────────────────────────────────────
+    if preprocessing.filter_method:
+        data = apply_filter_to_columns(
+            data,
             sensor_columns,
-            filter_method=preprocessing_config.filter_method,
-            cutoff_frequency=preprocessing_config.filter_cutoff,
-            sample_rate_hz=sample_rate_hz,
-            filter_order=preprocessing_config.filter_order,
-            filter_type=preprocessing_config.filter_type,
+            filter_method=preprocessing.filter_method,
+            cutoff_frequency=preprocessing.filter_cutoff,
+            sample_rate_hz=sample_rate,
+            filter_order=preprocessing.filter_order,
+            filter_type=preprocessing.filter_type,
         )
 
-    impute_fn = IMPUTATION_METHOD_TO_FUNCTION.get(
-        preprocessing_config.imputation_method,
+    # ── Imputation ────────────────────────────────────────────────────
+    impute = IMPUTATION_METHOD_TO_FUNCTION.get(
+        preprocessing.imputation_method,
         IMPUTATION_METHOD_TO_FUNCTION["interpolate"],
     )
-    processed_data = impute_fn(processed_data, preprocessing_config, sensor_columns)
+    data = impute(data, preprocessing, sensor_columns)
 
-    # ── Orientation-robust magnitude channels ─────────────────────────
-    if experiment_config.features.magnitude_channels:
-        processed_data = add_magnitude_channels(processed_data)
-        sensor_columns = [
-            column
-            for column in processed_data.select_dtypes(include="number").columns
-            if column not in non_sensor_columns
-        ]
+    # ── Magnitude channels (rotation-invariant) ───────────────────────
+    if features_config.magnitude_channels:
+        data = add_magnitude_channels(data)
+        sensor_columns = _sensor_columns(data)
 
-    extracted_features = extract_features_from_windows(
-        processed_data, sensor_columns, experiment_config
-    )
-    if extracted_features.empty:
+    # ── Feature extraction ────────────────────────────────────────────
+    features = extract_features_from_windows(data, sensor_columns, experiment_config)
+    if features.empty:
         return PipelineResult(feature_matrix=pd.DataFrame(), labels=None, feature_names=[])
 
-    extracted_labels = (
-        extracted_features.pop("label")
-        if "label" in extracted_features.columns
-        else None
-    )
+    labels, groups, features = _pop_metadata(features)
 
-    extracted_groups = (
-        extracted_features.pop("experiment_id")
-        if "experiment_id" in extracted_features.columns
-        else None
-    )
-
-    if experiment_config.features.selection_methods and extracted_labels is not None:
-        extracted_features = run_selection_pipeline(
-            extracted_features,
-            extracted_labels,
-            selection_methods=list(experiment_config.features.selection_methods),
+    # ── Feature selection ─────────────────────────────────────────────
+    if features_config.selection_methods and labels is not None:
+        features = run_selection_pipeline(
+            features,
+            labels,
+            selection_methods=list(features_config.selection_methods),
         )
 
     return PipelineResult(
-        feature_matrix=extracted_features,
-        labels=extracted_labels,
-        feature_names=extracted_features.columns.tolist(),
-        groups=extracted_groups,
+        feature_matrix=features,
+        labels=labels,
+        feature_names=features.columns.tolist(),
+        groups=groups,
     )
