@@ -1,0 +1,2 @@
+version,device name,recording epoch time,recording time,recording timezone,platform,appVersion,device id,sensors,sampleRateMs,standardisation,platform version
+3,SM-F936B,1780853136727,2026-06-07_17-25-36,Europe/Amsterdam,android,1.59.0,b9dfa7a6-735e-4101-8721-c7ffd5f5e877,Accelerometer|Gyroscope|Heart Rate|Annotation|TotalAcceleration|GyroscopeUncalibrated|AccelerometerUncalibrated|Watch Orientation|Watch Accelerometer|Watch Gravity|Watch Gyroscope|Watch TotalAcceleration,50|50|10||50|50|50|10|10|10|10|10,false,36

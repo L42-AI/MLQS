@@ -9,6 +9,7 @@ import argparse
 
 import numpy as np
 import torch
+from tabulate import tabulate
 from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import LabelEncoder
 
@@ -17,8 +18,20 @@ from config import Config, PreprocessingConfig, FeatureConfig, ModelConfig
 from data.loader import compute_sensor_summary, detect_data_quality_issues, load_all_experiment_sensors
 from models.classical import build_classifier
 from models.deep import build_deep_classifier, prepare_sequences, train_deep_model
-from models.evaluation import compute_classification_metrics
+from models.evaluation import (
+    build_model_comparison_table,
+    compute_classification_metrics,
+    compute_confusion_matrix,
+    format_classification_report,
+)
+from features.importance import (
+    compute_permutation_importance,
+    extract_rf_importances,
+    extract_xgboost_importances,
+    sort_and_display_top_features,
+)
 from pipeline.builder import run_train_test_pipeline
+
 
 
 
@@ -104,8 +117,11 @@ def main() -> None:
 
     # ── Train / evaluate ─────────────────────────────────────────────────
     if parsed_args.model == "classical":
+        class_names = list(label_encoder.classes_)
         _train_and_evaluate_classical_models(
             X_val, X_test, y_val, y_test, block_ids_val,
+            feature_names=val_result.feature_names,
+            label_names=class_names,
         )
     elif parsed_args.model == "deep":
         _train_and_evaluate_deep_model(
@@ -117,8 +133,20 @@ def _train_and_evaluate_classical_models(
     X_val: np.ndarray, X_test: np.ndarray,
     y_val: np.ndarray, y_test: np.ndarray,
     block_ids: np.ndarray | None = None,
+    feature_names: list[str] | None = None,
+    label_names: list[str] | None = None,
 ) -> None:
-    """k-fold block CV on *val* blocks, then final eval on held-out *test*."""
+    """k-fold block CV on *val* blocks, then final eval on held-out *test*.
+
+    Parameters
+    ----------
+    feature_names:
+        Column names of the feature matrix — used for feature importance display.
+    label_names:
+        Human-readable class names — used for per-class metrics reporting.
+    """
+
+    all_test_metrics: dict[str, dict] = {}
 
     for model_name, hyperparameters in [
         ("random_forest", {"n_estimators": 100, "max_depth": 10, "random_state": 42}),
@@ -159,7 +187,52 @@ def _train_and_evaluate_classical_models(
         preds = classifier.predict(X_test)
         proba = classifier.predict_proba(X_test) if hasattr(classifier, "predict_proba") else None
         metrics = compute_classification_metrics(y_test, preds, proba)
+        all_test_metrics[model_name] = metrics
         print(f"  Test:           acc={metrics['accuracy']:.3f}  f1={metrics['f1']:.3f}", flush=True)
+
+        # ── Per-class metrics ───────────────────────────────────────────
+        print("\n  Per-class metrics:")
+        report = format_classification_report(y_test, preds, label_names=label_names)
+        for line in report.split("\n"):
+            print(f"    {line}", flush=True)
+
+        # ── Confusion matrix ────────────────────────────────────────────
+        cm = compute_confusion_matrix(y_test, preds)
+        print(f"\n  Confusion matrix (raw):\n    {cm['raw']}")
+        if "normalized" in cm:
+            print(f"  Confusion matrix (normalized, row-wise):\n    {np.round(cm['normalized'], 3)}")
+
+        # ── Feature importance ──────────────────────────────────────────
+        if feature_names is not None:
+            importances: dict[str, float] | None = None
+            try:
+                if model_name == "random_forest":
+                    importances = extract_rf_importances(classifier, feature_names)
+                elif model_name == "xgboost":
+                    importances = extract_xgboost_importances(classifier, feature_names)
+                else:
+                    # SVM via permutation importance
+                    imp = compute_permutation_importance(
+                        classifier, X_test, y_test, feature_names, n_repeats=5,
+                    )
+                    importances = {k: v[0] for k, v in imp.items()}
+            except (ValueError, AttributeError, Exception) as exc:
+                print(f"  (feature importance unavailable: {exc})")
+
+            if importances:
+                sort_and_display_top_features(
+                    importances, top_n=10,
+                    title=f"  Top-10 Features ({model_name})",
+                )
+
+    # ── Multi-model comparison table ────────────────────────────────────
+    if len(all_test_metrics) > 1:
+        print("\n── Model Comparison ──", flush=True)
+        comparison = build_model_comparison_table(all_test_metrics)
+        if tabulate is not None:
+            print(tabulate(comparison, headers="keys", tablefmt="simple", showindex=False))
+        else:
+            print(comparison.to_string(index=False))
 
 
 def _train_and_evaluate_deep_model(
