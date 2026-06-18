@@ -31,7 +31,6 @@ print(f"Train: {len(X_train)}, Test: {len(X_test)}")
 all_model_results = {}
 for model_name, hyperparameters in [
     ("random_forest", {"n_estimators": 100, "max_depth": 10, "random_state": 42}),
-    ("svm", {"kernel": "rbf", "C": 1.0, "gamma": "scale", "random_state": 42}),
     ("xgboost", {"n_estimators": 100, "learning_rate": 0.1, "max_depth": 6, "random_state": 42}),
 ]:
     print(f"\nTraining: {model_name}")

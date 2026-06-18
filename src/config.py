@@ -57,6 +57,7 @@ class ModelConfig:
     deep_epochs: int = 100
     deep_batch_size: int = 32
     deep_learning_rate: float = 0.001
+    oos_participant: str = "Kim"
 
 
 @dataclass

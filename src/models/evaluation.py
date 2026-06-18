@@ -60,12 +60,15 @@ def compute_per_class_metrics(
         a list of per-class values. If label_names is provided, keys are class
         names instead of integer indices.
     """
-    precision = precision_score(y_true, y_pred, average=None, zero_division=0)
-    recall = recall_score(y_true, y_pred, average=None, zero_division=0)
-    f1 = f1_score(y_true, y_pred, average=None, zero_division=0)
+    # Align all metrics on the true class set so shapes match even when
+    # y_pred contains classes absent from y_true (e.g., a participant with
+    # only HARD recordings but the model predicts SILENCE).
+    classes = np.unique(y_true)
+    precision = precision_score(y_true, y_pred, average=None, zero_division=0, labels=classes)
+    recall = recall_score(y_true, y_pred, average=None, zero_division=0, labels=classes)
+    f1 = f1_score(y_true, y_pred, average=None, zero_division=0, labels=classes)
 
     # Per-class support (number of true instances per class)
-    classes = np.unique(y_true)
     support = np.array([np.sum(y_true == c) for c in classes], dtype=int)
 
     if label_names is not None:

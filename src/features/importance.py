@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from sklearn.inspection import permutation_importance
 
 try:
     from tabulate import tabulate
@@ -84,59 +83,6 @@ def extract_xgboost_importances(
 
     result = dict(zip(feature_names, importances))
     return dict(sorted(result.items(), key=lambda item: item[1], reverse=True))
-
-
-def compute_permutation_importance(
-    classifier,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-    feature_names: list[str],
-    scoring: str = "f1_weighted",
-    n_repeats: int = 10,
-    random_state: int = 42,
-) -> dict[str, tuple[float, float]]:
-    """Compute permutation feature importance for a trained classifier.
-
-    Parameters
-    ----------
-    classifier : estimator
-        A trained scikit-learn compatible estimator.
-    X_test : np.ndarray
-        Test feature matrix.
-    y_test : np.ndarray
-        Test target vector.
-    feature_names : list[str]
-        List of feature names corresponding to the columns of ``X_test``.
-    scoring : str, default="f1_weighted"
-        Scoring metric to use for permutation importance.
-    n_repeats : int, default=10
-        Number of times to permute each feature.
-    random_state : int, default=42
-        Random state for reproducibility.
-
-    Returns
-    -------
-    dict[str, tuple[float, float]]
-        Mapping of feature name to (importance_mean, importance_std),
-        sorted by mean importance descending.
-    """
-    result = permutation_importance(
-        classifier,
-        X_test,
-        y_test,
-        scoring=scoring,
-        n_repeats=n_repeats,
-        random_state=random_state,
-    )
-
-    result_dict = {
-        name: (result.importances_mean[i], result.importances_std[i])
-        for i, name in enumerate(feature_names)
-    }
-
-    return dict(
-        sorted(result_dict.items(), key=lambda item: item[1][0], reverse=True)
-    )
 
 
 def sort_and_display_top_features(

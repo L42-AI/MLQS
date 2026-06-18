@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +12,23 @@ from consts import SRC
 from labels import Label
 from preprocessing.resample import synchronise_sensor_frames
 from schema import SensorSchema, detect_schema
+
+
+def extract_participant_from_directory(directory_name: str) -> str:
+    """Extract participant name from experiment directory name.
+
+    Handles naming patterns like::
+
+        Misha_soft-2026-06-15_20-16-04  →  Misha
+        Noella_Hard-2026-06-17_06-33-29 →  Noella
+        Kim_hard-2026-06-18_13-07-03    →  Kim
+        Luka_Silence-2026-06-07_17-48-58 → Luka
+
+    The participant name is everything before the first ``_`` or ``-``
+    character.
+    """
+    match = re.match(r"^([^_-]+)", directory_name)
+    return match.group(1) if match else "unknown"
 
 
 def load_single_sensor_csv(
@@ -69,33 +87,50 @@ def load_all_experiment_sensors(
     raw_data_directory: str | Path = SRC / "data" / "raw",
     resample_rule: str = "100ms",
 ) -> pd.DataFrame:
+    """Load all experiment sensor data, grouped by label then participant.
+
+    Each experiment subdirectory contains per-sensor CSV files exported
+    from phyphox.  Experiments are loaded individually, then all are
+    concatenated into a single DataFrame with ``label``, ``participant``,
+    and ``experiment_id`` columns for downstream participant-based splitting.
+    """
     raw_data_directory = Path(raw_data_directory)
     if not raw_data_directory.is_dir():
         raise ValueError(f"raw_data_directory not found: {raw_data_directory}")
 
     experiment_dataframes: list[pd.DataFrame] = []
+    experiment_id = 0
 
-    for experiment_id, experiment_directory in enumerate(sorted(raw_data_directory.iterdir())):
-        if not experiment_directory.is_dir():
+    for label_dir in sorted(raw_data_directory.iterdir()):
+        if not label_dir.is_dir():
             continue
 
-        detected_label = _detect_label_from_directory_name(experiment_directory.name)
-        loaded_sensors = _load_sensor_csvs_in_directory(experiment_directory)
-        if not loaded_sensors:
+        detected_label = _detect_label_from_directory_name(label_dir.name)
+        if detected_label is None:
             continue
 
-        merged_sensor_data = synchronise_sensor_frames(
-            loaded_sensors,
-            resample_rule=resample_rule,
-            time_column="seconds_elapsed",
-        )
-        merged_sensor_data = _flatten_multiindex_columns(merged_sensor_data)
+        for experiment_dir in sorted(label_dir.iterdir()):
+            if not experiment_dir.is_dir():
+                continue
 
-        if detected_label is not None:
+            participant = extract_participant_from_directory(experiment_dir.name)
+            loaded_sensors = _load_sensor_csvs_in_directory(experiment_dir)
+            if not loaded_sensors:
+                continue
+
+            merged_sensor_data = synchronise_sensor_frames(
+                loaded_sensors,
+                resample_rule=resample_rule,
+                time_column="seconds_elapsed",
+            )
+            merged_sensor_data = _flatten_multiindex_columns(merged_sensor_data)
+
             merged_sensor_data["label"] = detected_label.value
+            merged_sensor_data["participant"] = participant
+            merged_sensor_data["experiment_id"] = experiment_id
 
-        merged_sensor_data["experiment_id"] = experiment_id
-        experiment_dataframes.append(merged_sensor_data)
+            experiment_dataframes.append(merged_sensor_data)
+            experiment_id += 1
 
     if not experiment_dataframes:
         return pd.DataFrame()

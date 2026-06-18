@@ -1,14 +1,9 @@
-"""Train and evaluate classical ML models (RF, SVM, XGBoost)."""
+"""Train and evaluate classical ML models (RF, XGBoost)."""
 
 from __future__ import annotations
 
-import numpy as np
-from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.svm import SVC
 from xgboost import XGBClassifier
 
 
@@ -16,11 +11,6 @@ def build_classifier(model_name: str, **hyperparameters):
     match model_name:
         case "random_forest":
             return RandomForestClassifier(**hyperparameters)
-        case "svm":
-            return CalibratedClassifierCV(
-                make_pipeline(StandardScaler(), SVC(**hyperparameters)),
-                ensemble=False,
-            )
         case "xgboost":
             return XGBClassifier(**hyperparameters)
         case _:

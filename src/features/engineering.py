@@ -294,16 +294,12 @@ def extract_features_from_windows(
             cross_df = pd.DataFrame(cross_rows)
             features = pd.concat([features, cross_df], axis=1)
 
-    # ── 8. Labels and experiment IDs ─────────────────────────────────────
-    if "label" in sensor_data.columns:
-        features["label"] = [
-            str(v) if pd.notna(v) else None
-            for v in sensor_data["label"].iloc[start_indices]
-        ]
-    if "experiment_id" in sensor_data.columns:
-        features["experiment_id"] = [
-            int(v) if pd.notna(v) else None
-            for v in sensor_data["experiment_id"].iloc[start_indices]
-        ]
+    # ── 8. Labels, participant, and experiment IDs ────────────────────────
+    for column_name in ["label", "participant", "experiment_id"]:
+        if column_name in sensor_data.columns:
+            features[column_name] = [
+                str(v) if pd.notna(v) else None
+                for v in sensor_data[column_name].iloc[start_indices]
+            ]
 
     return features
