@@ -85,10 +85,6 @@ def _filter_pipeline_result(
     result: PipelineResult,
     keep_classes: list[str] | None,
 ) -> PipelineResult | None:
-    """Return a new ``PipelineResult`` with only *keep_classes* rows.
-
-    Returns ``None`` if fewer than 2 classes remain after filtering.
-    """
     if keep_classes is None:
         return result
 
@@ -116,11 +112,6 @@ CACHE_ROOT = Path(__file__).resolve().parent.parent / ".tmp" / "feature_cache"
 
 
 def _config_cache_key(config: Config, split_strategy: str) -> str:
-    """Deterministic cache key based on config + split strategy.
-
-    Only config values that affect feature extraction are included, so
-    changing the model config doesn't invalidate the cache.
-    """
     config_dict = {
         "split": split_strategy,
         "preprocessing": {
@@ -193,12 +184,6 @@ _CLASSICAL_MODELS: list[tuple[str, dict]] = [
 
 
 def _validate_and_clean_features(X: np.ndarray, label: str = "") -> np.ndarray:
-    """Check for and clean non-finite values that crash C-level trainers.
-
-    Replaces ``+/-inf`` with ``NaN`` (which XGBoost handles as missing).
-    Raises ``ValueError`` if any ``NaN`` is found (shouldn't happen, but
-    if it does it means upstream feature engineering is broken).
-    """
     n_inf = int(np.isinf(X).sum())
     if n_inf:
         print(f"  ⚠ {label}: clipped {n_inf} Inf value(s) → NaN", flush=True)
@@ -239,14 +224,6 @@ def _split_label(label: str) -> str:
 
 
 def _run_comparison(sensor_data: pd.DataFrame, config: Config, no_cache: bool = False) -> None:
-    """Run all split × class-subset × model combinations for comparison.
-
-    Demonstrates two key findings:
-      1. Predictive signal exists (within-subject works) but does not
-         generalise across participants (LOPO fails).
-      2. The most discriminable contrast is HARD vs SOFT, not the
-         intuitive HARD vs SILENCE.
-    """
     split_strategies = ["within_subject", "participant"]
     subset_names = ["all", "hard+soft", "hard+silence", "soft+silence"]
     n_total = len(split_strategies) * len(subset_names) * len(_CLASSICAL_MODELS)

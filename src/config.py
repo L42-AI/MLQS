@@ -22,15 +22,6 @@ class PreprocessingConfig:
 
 @dataclass
 class SensorWindowConfig:
-    """Per-sensor override for feature extraction window sizes.
-
-    Attributes:
-        base_window_seconds: Context window length for time-domain and
-            statistical features.  Larger values (e.g. 30 s for heart rate)
-            capture slower dynamics that would be invisible in a short window.
-        freq_window_seconds: Separate (usually larger) context for
-            frequency-domain features.  ``None`` → same as *base_window_seconds*.
-    """
     base_window_seconds: float
     freq_window_seconds: float | None = None
 
