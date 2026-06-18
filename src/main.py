@@ -611,7 +611,7 @@ def main() -> None:
         )
     elif parsed_args.model == "deep":
         _train_and_evaluate_deep_model(
-            X_val, X_test, y_val, y_test, groups_val,
+            X_val, X_test, y_val, y_test,
             cv_name=cv_groups_name,
         )
 
@@ -729,53 +729,57 @@ def _train_and_evaluate_classical_models(
 def _train_and_evaluate_deep_model(
     X_val: np.ndarray, X_test: np.ndarray,
     y_val: np.ndarray, y_test: np.ndarray,
-    groups: np.ndarray | None = None,
     cv_name: str = "block",
 ) -> None:
-    """Train a deep model on *val* participants, evaluate on OOS *test*.
+    """Train both LSTM and TCN on *val* participants, evaluate on OOS *test*.
 
-    When groups are participant IDs from LOPO splitting, this tests
-    cross-participant generalization directly.
+    Note: unlike the classical model path, this function does **not**
+    perform cross-validation.  It trains once on the full validation set
+    and evaluates once on the held-out test set — a single hold-out split.
     """
     sequence_length = min(32, len(X_val) // 10)
     batch_size = 32
     training_loader = prepare_sequences(X_val, y_val, sequence_length, batch_size)
     test_loader = prepare_sequences(X_test, y_test, sequence_length, batch_size)
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    deep_classifier = build_deep_classifier(
-        model_type="lstm",
-        input_size=X_val.shape[1],
-        num_classes=len(np.unique(y_val)),
-    )
-    print(f"  Model: {type(deep_classifier).__name__} on {device}")
-    if cv_name == "participant":
-        print(f"  CV strategy: LOPO (no participant overlap between train/val)")
-    else:
-        print(f"  CV strategy: block-based (may leak participant identity)")
 
-    train_deep_model(
-        deep_classifier,
-        training_loader,
-        num_epochs=20,
-        learning_rate=0.001,
-        device=device,
+    holdout_label = (
+        "no participant overlap" if cv_name == "participant"
+        else "block-based"
     )
+    print(f"  Hold-out: train on {len(X_val)} windows, test on {len(X_test)} windows ({holdout_label})")
 
-    deep_classifier.eval()
-    all_predictions, all_true_labels = [], []
-    with torch.no_grad():
-        for batch_inputs, batch_labels in test_loader:
-            logits = deep_classifier(batch_inputs.to(device))
-            all_predictions.extend(logits.argmax(1).cpu().numpy())
-            all_true_labels.extend(batch_labels.numpy())
+    for model_type in ("lstm", "tcn"):
+        print(f"\n  ── {model_type.upper()} ──", flush=True)
+        deep_classifier = build_deep_classifier(
+            model_type=model_type,
+            input_size=X_val.shape[1],
+            num_classes=len(np.unique(y_val)),
+        )
+        print(f"  Model: {type(deep_classifier).__name__} on {device}")
 
-    metric_scores = compute_classification_metrics(
-        np.array(all_true_labels), np.array(all_predictions)
-    )
-    print(
-        f"  Test — acc={metric_scores['accuracy']:.3f}  f1={metric_scores['f1']:.3f}"
-    )
+        train_deep_model(
+            deep_classifier,
+            training_loader,
+            num_epochs=20,
+            learning_rate=0.001,
+            device=device,
+        )
+
+        deep_classifier.eval()
+        all_predictions, all_true_labels = [], []
+        with torch.no_grad():
+            for batch_inputs, batch_labels in test_loader:
+                logits = deep_classifier(batch_inputs.to(device))
+                all_predictions.extend(logits.argmax(1).cpu().numpy())
+                all_true_labels.extend(batch_labels.numpy())
+
+        metric_scores = compute_classification_metrics(
+            np.array(all_true_labels), np.array(all_predictions)
+        )
+        print(
+            f"  Test — acc={metric_scores['accuracy']:.3f}  f1={metric_scores['f1']:.3f}"
+        )
 
 
 if __name__ == "__main__":
