@@ -337,7 +337,7 @@ def select_by_boruta(
     perc = kwargs.pop("perc", 85)
 
     estimator = RandomForestClassifier(
-        n_jobs=1, class_weight="balanced", max_depth=max_depth, random_state=42,
+        n_jobs=-1, class_weight="balanced", max_depth=max_depth, random_state=42,
     )
     boruta = _TrackingBoruta(
         estimator,
@@ -349,7 +349,7 @@ def select_by_boruta(
     )
 
     feature_names = list(numeric_features.columns)
-    max_iter = kwargs.get("max_iter", 100)
+    max_iter = kwargs.get("max_iter", 200)
 
     with tqdm(
         total=max_iter,

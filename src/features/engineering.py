@@ -92,6 +92,8 @@ def _extract_features(
     if feature_config.frequency_domain:
         for name, val in frequency_domain.compute_all_frequency_features(
             readings, fs=sample_rate_hz,
+            frequency_bands=feature_config.frequency_bands,
+            rolloff_fraction=feature_config.rolloff_fraction,
         ).items():
             extracted[prefix + name] = val
 
@@ -157,6 +159,8 @@ def _batch_extract_and_compute(
         # Vectorised batch — one np.fft.rfft call + numpy ops for all windows.
         for name, vals in frequency_domain.compute_batch_frequency_features(
             windows, fs=sample_rate,
+            frequency_bands=feature_config.frequency_bands,
+            rolloff_fraction=feature_config.rolloff_fraction,
         ).items():
             out[prefix + name] = vals
 

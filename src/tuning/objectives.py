@@ -92,6 +92,19 @@ def _build_config_from_trial(trial: optuna.Trial, base_config: Config, categorie
         cfg.features.magnitude_channels = f["magnitude_channels"]
         cfg.features.cross_sensor_features = f["cross_sensor_features"]
 
+        # Construct 4 frequency bands from 3 sorted boundaries.
+        boundaries = sorted([
+            f["band_boundary_1"],
+            f["band_boundary_2"],
+            f["band_boundary_3"],
+        ])
+        cfg.features.frequency_bands = (
+            (0.5, boundaries[0]),
+            (boundaries[0], boundaries[1]),
+            (boundaries[1], boundaries[2]),
+            (boundaries[2], 30.0),
+        )
+
     if "feature_selection" in categories:
         s = suggest_feature_selection_params(trial)
         cfg.features.selection_methods = tuple(s["selection_methods"])
