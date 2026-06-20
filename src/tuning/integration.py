@@ -75,7 +75,10 @@ class _ProgressCallback:
         self.trial_times.append(now)
 
         n_done = trial.number + 1
-        rolling_window = min(10, n_done)
+        # Use len(self.trial_times) (not n_done) because the current
+        # trial's timestamp hasn't been appended yet — line 75 is below.
+        n_prev = len(self.trial_times)
+        rolling_window = min(10, n_prev)
         avg_trial_time = (
             (self.trial_times[-1] - self.trial_times[-rolling_window]) / rolling_window
             if rolling_window > 1
@@ -322,6 +325,7 @@ def run_tuning(
             base_config=base_config,
             oos_participant=base_config.models.oos_participant,
             n_cv_folds=base_config.models.cv_folds,
+            trial_timeout=tuning_config.trial_timeout_seconds,
         )
 
     # ── Pruner (Hyperband for deep models, MedianPruner otherwise) ────────

@@ -12,6 +12,7 @@ All objectives support Optuna's pruning API via
 
 from __future__ import annotations
 
+import signal
 from copy import deepcopy
 from pathlib import Path
 
@@ -101,6 +102,26 @@ def _build_config_from_trial(trial: optuna.Trial, base_config: Config, categorie
 # ── Pipeline-level objective ─────────────────────────────────────────────────
 
 
+class _TrialTimeout:
+    """Per-trial timeout via ``signal.SIGALRM`` (Unix-only)."""
+
+    def __init__(self, seconds: int) -> None:
+        self.seconds = seconds
+        self._old_handler: Any = None
+
+    def __enter__(self) -> None:
+        self._old_handler = signal.signal(signal.SIGALRM, self._raise_timeout)
+        signal.alarm(self.seconds)
+
+    def __exit__(self, *args: Any) -> None:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, self._old_handler)
+
+    @staticmethod
+    def _raise_timeout(signum: int, frame: Any) -> None:
+        raise TimeoutError("Trial timed out")
+
+
 class PipelineObjective:
     """End-to-end pipeline objective: preprocessing → features → model.
 
@@ -117,6 +138,8 @@ class PipelineObjective:
         Held-out participant for the LOPO evaluation.
     n_cv_folds :
         Number of GroupKFold folds for validation.
+    trial_timeout :
+        Maximum seconds for a single trial (``None`` = no limit).
     """
 
     def __init__(
@@ -125,11 +148,13 @@ class PipelineObjective:
         base_config: Config,
         oos_participant: str = "Kim",
         n_cv_folds: int = 5,
+        trial_timeout: int | None = None,
     ) -> None:
         self.categories = categories
         self.base_config = base_config
         self.oos_participant = oos_participant
         self.n_cv_folds = n_cv_folds
+        self.trial_timeout = trial_timeout
         self._data: any = None
 
     def _ensure_data(self) -> None:
@@ -140,6 +165,26 @@ class PipelineObjective:
             )
 
     def __call__(self, trial: optuna.Trial) -> float:
+        # ── Per-trial timeout ────────────────────────────────────────────
+        timeout_ctx = (
+            _TrialTimeout(self.trial_timeout)
+            if self.trial_timeout is not None
+            else None
+        )
+        if timeout_ctx is not None:
+            timeout_ctx.__enter__()
+
+        try:
+            return self._run_trial(trial)
+        except TimeoutError:
+            # Return a terrible score so TPE learns to avoid this region.
+            print(f"  ⏱  Trial #{trial.number} timed out (> {self.trial_timeout}s) → scoring 0.0", flush=True)
+            return 0.0
+        finally:
+            if timeout_ctx is not None:
+                timeout_ctx.__exit__(None, None, None)
+
+    def _run_trial(self, trial: optuna.Trial) -> float:
         self._ensure_data()
 
         # Build config from trial params
@@ -162,9 +207,16 @@ class PipelineObjective:
         y_train = le.fit_transform(y_train)
         y_test = le.transform(y_test)
 
-        # Quick evaluation with default RF (tune the model separately)
-        from sklearn.ensemble import RandomForestClassifier
-        clf = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)
+        # Quick evaluation with default XGBoost (tune the model separately)
+        n_feats = X_train.shape[1]
+        n_train = len(X_train)
+        print(f"    Features: {n_feats}  |  Train samples: {n_train}  |  Test samples: {len(X_test)}", flush=True)
+        print(f"    Training XGBoost …", flush=True)
+        from xgboost import XGBClassifier
+        clf = XGBClassifier(
+            n_estimators=100, learning_rate=0.1, max_depth=6,
+            n_jobs=1, tree_method="hist", random_state=42, verbosity=0,
+        )
         clf.fit(X_train, y_train)
         preds = clf.predict(X_test)
         metrics = compute_classification_metrics(y_test, preds)

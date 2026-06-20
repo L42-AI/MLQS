@@ -39,7 +39,11 @@ class TuningConfig:
     n_trials :
         Number of Optuna trials to run.
     timeout :
-        Maximum wall-clock seconds for the optimisation (``None`` = no limit).
+        Maximum wall-clock seconds for the whole optimisation (``None`` = no limit).
+    trial_timeout_seconds :
+        Maximum seconds for a **single trial**.  When a trial exceeds this
+        limit it is interrupted and reported as a failure (pruned).
+        ``None`` = no per-trial limit.
     pruner_config :
         Optional dict of keyword arguments forwarded to the ``MedianPruner``
         constructor (e.g. ``{"n_startup_trials": 10, "n_warmup_steps": 5}``).
@@ -57,6 +61,7 @@ class TuningConfig:
     storage_url: str | None = "sqlite:///.tmp/tuning/studies.db"
     n_trials: int = 50
     timeout: int | None = None
+    trial_timeout_seconds: int | None = 120  # 2 min per trial
     pruner_config: dict | None = field(default_factory=lambda: {"n_startup_trials": 5, "n_warmup_steps": 10})
     sampler_config: dict | None = field(default_factory=lambda: {"n_startup_trials": 5})
     study_name: str | None = None

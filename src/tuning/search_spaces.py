@@ -21,7 +21,10 @@ def suggest_preprocessing_params(trial: optuna.Trial) -> dict:
     params["filter_method"] = trial.suggest_categorical(
         "filter_method", ["butterworth", "moving_average", "savitzky_golay"]
     )
-    params["filter_cutoff"] = trial.suggest_float("filter_cutoff", 1.0, 10.0)
+    # Max cutoff must stay below nyquist (sample_rate / 2).
+    # With default 100 ms resample → 10 Hz → nyquist = 5 Hz.
+    # Higher-order filters need extra headroom → cap at 4.5.
+    params["filter_cutoff"] = trial.suggest_float("filter_cutoff", 0.5, 4.5)
     params["filter_type"] = trial.suggest_categorical(
         "filter_type", ["low", "high", "band"]
     )
