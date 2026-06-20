@@ -15,6 +15,8 @@ class PreprocessingConfig:
     filter_cutoff: float = 4.0
     filter_order: int = 4
     filter_type: Literal["low", "high", "band"] = "low"
+    savitzky_golay_window_length: int = 11
+    savitzky_golay_polyorder: int = 3
     imputation_method: Literal["interpolate", "ffill", "knn"] = "interpolate"
     imputation_max_gap: int = 5
     resample_rule: str = "100ms"

@@ -29,6 +29,7 @@ from sklearn.preprocessing import LabelEncoder
 
 
 from config import Config, PreprocessingConfig, FeatureConfig, ModelConfig
+from tuning import TuningCategory, TuningConfig, run_tuning
 from data.loader import compute_sensor_summary, detect_data_quality_issues, load_all_experiment_sensors
 from models.classical import build_classifier
 from models.deep import build_deep_classifier, prepare_sequences, train_deep_model
@@ -510,6 +511,35 @@ def main() -> None:
         help="Disable pipeline result caching (re-run feature extraction)",
     )
     argument_parser.add_argument("--eda", action="store_true", help="EDA only")
+
+    # ── Tuning arguments ─────────────────────────────────────────────────
+    argument_parser.add_argument(
+        "--tune",
+        action="store_true",
+        help="Run hyperparameter tuning via Optuna",
+    )
+    argument_parser.add_argument(
+        "--categories",
+        type=str,
+        default="all",
+        help=(
+            "Comma-separated list of categories to tune: "
+            "preprocessing, windowing, sensor_windows, features, "
+            "feature_selection, classical_models, deep_models  (default: all)"
+        ),
+    )
+    argument_parser.add_argument(
+        "--trials",
+        type=int,
+        default=50,
+        help="Number of Optuna trials to run (default: 50)",
+    )
+    argument_parser.add_argument(
+        "--study-name",
+        type=str,
+        default=None,
+        help="Optuna study name (default: auto-generated)",
+    )
     parsed_args = argument_parser.parse_args()
 
     experiment_config = Config(
@@ -520,6 +550,22 @@ def main() -> None:
 
     if parsed_args.eda:
         _run_exploratory_analysis(experiment_config)
+        return
+
+    # ── Tuning mode ──────────────────────────────────────────────────────
+    if parsed_args.tune:
+        if parsed_args.categories == "all":
+            categories = list(TuningCategory)
+        else:
+            raw_cats = [c.strip() for c in parsed_args.categories.split(",")]
+            categories = [TuningCategory(c) for c in raw_cats]
+
+        tc = TuningConfig(
+            categories=categories,
+            n_trials=parsed_args.trials,
+            study_name=parsed_args.study_name,
+        )
+        run_tuning(experiment_config, tc)
         return
 
     # ── Load data ────────────────────────────────────────────────────────
