@@ -11,14 +11,14 @@ from consts import SRC
 
 @dataclass
 class PreprocessingConfig:
-    filter_method: Literal["butterworth", "moving_average", "savitzky_golay"] = "butterworth"
-    filter_cutoff: float = 4.0
+    filter_method: Literal["butterworth", "moving_average", "savitzky_golay"] = "savitzky_golay"
+    filter_cutoff: float = 0.99
     filter_order: int = 4
-    filter_type: Literal["low", "high", "band"] = "low"
+    filter_type: Literal["low", "high", "band"] = "high"
     savitzky_golay_window_length: int = 11
-    savitzky_golay_polyorder: int = 3
-    imputation_method: Literal["interpolate", "ffill", "knn"] = "interpolate"
-    imputation_max_gap: int = 5
+    savitzky_golay_polyorder: int = 1
+    imputation_method: Literal["interpolate", "ffill", "knn"] = "ffill"
+    imputation_max_gap: int = 19
     resample_rule: str = "100ms"
 
 
@@ -30,8 +30,8 @@ class SensorWindowConfig:
 
 @dataclass
 class FeatureConfig:
-    window_size: float = 2.0
-    window_overlap: float = 0.5
+    window_size: float = 1.42
+    window_overlap: float = 0.27
     frequency_window_size: float | None = None
     sensor_windows: dict[str, SensorWindowConfig] = field(default_factory=dict)
     magnitude_channels: bool = True
