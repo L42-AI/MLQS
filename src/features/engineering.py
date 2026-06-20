@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from config import SensorWindowConfig
 from features import frequency_domain, statistical, time_domain
-from features.cross_sensor import compute_cross_sensor_features
+from features.cross_sensor import compute_batch_cross_sensor_features
 
 
 # ── Context window geometry ─────────────────────────────────────────────────
@@ -154,15 +154,11 @@ def _batch_extract_and_compute(
             out[prefix + name] = vals
 
     if feature_config.frequency_domain:
-        # Per-window Welch (cannot be fully vectorised across windows)
-        freq_arrays: dict[str, list[float]] = {}
-        for i in range(n_windows):
-            for name, val in frequency_domain.compute_all_frequency_features(
-                windows[i], fs=sample_rate,
-            ).items():
-                freq_arrays.setdefault(name, []).append(val)
-        for name, vals in freq_arrays.items():
-            out[prefix + name] = np.array(vals)
+        # Vectorised batch — one np.fft.rfft call + numpy ops for all windows.
+        for name, vals in frequency_domain.compute_batch_frequency_features(
+            windows, fs=sample_rate,
+        ).items():
+            out[prefix + name] = vals
 
     if feature_config.statistical:
         for name, vals in statistical.compute_batch_statistical_features(windows).items():
@@ -251,7 +247,7 @@ def extract_features_from_windows(
     desc = f"Block {block_info}  |  {len(columns)} cols" if block_info else f"{len(columns)} cols"
     feature_data: dict[str, np.ndarray] = {}
 
-    for idx, col in enumerate(tqdm(columns, desc=desc, leave=False)):
+    for idx, col in enumerate(tqdm(columns, desc=desc)):
         starts, ends = size_bounds[col_context[col]]
 
         if col_has_nan[col]:
@@ -284,14 +280,13 @@ def extract_features_from_windows(
 
     features = pd.DataFrame(feature_data)
 
-    # ── 7. Cross-sensor features ─────────────────────────────────────────
+    # ── 7. Cross-sensor features (batch — no per-window iloc) ────────────
     if feature_config.cross_sensor_features:
-        cross_rows = [
-            compute_cross_sensor_features(sensor_data.iloc[s:s + win_len])
-            for s in start_indices
-        ]
-        if cross_rows:
-            cross_df = pd.DataFrame(cross_rows)
+        cross_feats = compute_batch_cross_sensor_features(
+            arrays, start_indices, win_len,
+        )
+        if cross_feats:
+            cross_df = pd.DataFrame(cross_feats)
             features = pd.concat([features, cross_df], axis=1)
 
     # ── 8. Labels, participant, and experiment IDs ────────────────────────

@@ -138,3 +138,101 @@ def compute_all_frequency_features(
         )
 
     return features
+
+
+# ── Fully vectorised batch variant (2D) ──────────────────────────────────────
+# Instead of calling compute_all_frequency_features once per window, we
+# compute the FFT of ALL windows in a single np.fft.rfft() call over
+# axis=1, then compute every feature from the resulting 2-D PSD matrix
+# using pure numpy vectorised operations.  This eliminates 1M+ Python
+# loop iterations and 1M+ calls to signal.welch / np.fft.rfft.
+
+
+def compute_batch_frequency_features(
+    windows: np.ndarray,
+    fs: float = 100.0,
+    rolloff_fraction: float = 0.85,
+    frequency_bands: list[tuple[float, float]] | None = None,
+) -> dict[str, np.ndarray]:
+    """Compute all frequency-domain features for *all* windows at once.
+
+    Parameters
+    ----------
+    windows : np.ndarray, shape ``(num_windows, window_len)``
+        Stack of windowed signal segments.
+    fs :
+        Sampling rate in Hz.
+    rolloff_fraction :
+        Fraction of total energy for the roll-off point.
+    frequency_bands :
+        List of ``(low, high)`` tuples for band-energy ratios.
+        Defaults to ``_DEFAULT_FREQUENCY_BANDS``.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        Each value has shape ``(num_windows,)`` with the same keys as
+        :func:`compute_all_frequency_features`:
+        ``dominant_frequency``, ``spectral_centroid``, ``spectral_rolloff``,
+        ``spectral_entropy``, plus band-energy keys like ``"0.5-4hz"``.
+    """
+    if frequency_bands is None:
+        frequency_bands = _DEFAULT_FREQUENCY_BANDS
+
+    n_windows, win_len = windows.shape
+
+    # ── Batch power-spectral-density ───────────────────────────────────────
+    # One call to signal.welch (or np.fft.rfft for very short windows)
+    # instead of N individual calls.  The results are bit-identical.
+    segments = min(256, win_len // 2)
+    if segments < 8:
+        # Fallback: raw FFT (same as _compute_power_spectral_density)
+        fft_vals = np.fft.rfft(windows, axis=1)          # (N, n_freqs)
+        psd = np.abs(fft_vals, dtype=np.float64) ** 2
+        freqs = np.fft.rfftfreq(win_len, d=1.0 / fs)
+    else:
+        # Welch's method — vectorised across all windows via axis=-1
+        freqs, psd = signal.welch(windows, fs=fs, nperseg=segments, axis=-1)
+
+    # Avoid division by zero
+    total_power = np.sum(psd, axis=1, keepdims=True) + _EPSILON  # (N, 1)
+    n_freqs = psd.shape[1]
+
+    features: dict[str, np.ndarray] = {}
+
+    # ── Dominant frequency ────────────────────────────────────────────────
+    max_idx = np.argmax(psd, axis=1)                     # (N,)
+    features["dominant_frequency"] = freqs[max_idx]
+
+    # ── Spectral centroid ─────────────────────────────────────────────────
+    # Weighted mean of the spectrum, per window.
+    features["spectral_centroid"] = (
+        np.sum(freqs * psd, axis=1) / total_power[:, 0]
+    )
+
+    # ── Spectral rolloff ──────────────────────────────────────────────────
+    # Frequency below which *rolloff_fraction* of energy lies.
+    # Vectorised: the rolloff index is the first position where cumulative
+    # energy >= target.  ``np.sum(cum < target, axis=1)`` counts how many
+    # positions precede it — equivalent to ``searchsorted`` but 2-D safe.
+    cum_energy = np.cumsum(psd, axis=1)                  # (N, n_freqs)
+    rolloff_target = rolloff_fraction * cum_energy[:, -1:]  # (N, 1)
+    rolloff_idx = np.sum(cum_energy < rolloff_target, axis=1)  # (N,)
+    rolloff_idx = np.clip(rolloff_idx, 0, n_freqs - 1)
+    features["spectral_rolloff"] = freqs[rolloff_idx]
+
+    # ── Spectral entropy ──────────────────────────────────────────────────
+    # Shannon entropy of the normalised PSD.
+    norm_psd = psd / total_power                          # (N, n_freqs)
+    features["spectral_entropy"] = -np.sum(
+        norm_psd * np.log2(norm_psd + _EPSILON), axis=1
+    )
+
+    # ── Band energy ratios ────────────────────────────────────────────────
+    for low_freq, high_freq in frequency_bands:
+        band_mask = (freqs >= low_freq) & (freqs <= high_freq)  # (n_freqs,)
+        features[f"{low_freq}-{high_freq}hz"] = (
+            np.sum(psd[:, band_mask], axis=1) / total_power[:, 0]
+        )
+
+    return features

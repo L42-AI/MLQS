@@ -390,9 +390,11 @@ def run_participant_train_test_pipeline(
     # This ensures every participant's features go through identical
     # selection — no column mismatch at concatenation time.
     if features_config.selection_methods and train_labels is not None:
+        sel_methods = list(features_config.selection_methods)
+        print(f"    Selecting features ({', '.join(sel_methods)}) …", flush=True)
         train_feats = run_selection_pipeline(
             train_feats, train_labels,
-            selection_methods=list(features_config.selection_methods),
+            selection_methods=sel_methods,
         )
 
     train_result = PipelineResult(
