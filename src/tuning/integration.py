@@ -20,7 +20,9 @@ Execution strategies
 from __future__ import annotations
 
 import json
+import math
 import os
+import signal
 import time
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -29,20 +31,19 @@ from pathlib import Path
 
 import numpy as np
 import optuna
+import pandas as pd
 from optuna.pruners import HyperbandPruner, MedianPruner
 from optuna.samplers import TPESampler
 from sklearn.preprocessing import LabelEncoder
+from tqdm import tqdm
 
 from config import Config
 from data.loader import load_all_experiment_sensors
-from features.selection import run_selection_pipeline
+from features.selection import select_by_boruta
 from pipeline.builder import run_participant_train_test_pipeline
 
 from .config import TuningCategory, TuningConfig
 from .objectives import PipelineObjective, classical_trial
-from .search_spaces import (
-    suggest_feature_selection_params,
-)
 
 TUNING_OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent / ".tmp" / "tuning"
 
@@ -53,62 +54,29 @@ _PIPELINE_CATEGORIES = {"preprocessing", "windowing", "sensor_windows", "feature
 
 
 class _ProgressCallback:
-    """Optuna callback that prints per-trial timing, rolling ETA, and best-so-far."""
+    """Optuna callback that updates a tqdm progress bar."""
 
-    def __init__(self, n_trials: int) -> None:
-        self.n_trials = n_trials
-        self.trial_times: list[float] = []
-        self.start_time: float | None = None
+    def __init__(self, n_trials: int, desc: str = "Tuning") -> None:
+        self.pbar = tqdm(
+            total=n_trials,
+            desc=desc,
+            unit="trial",
+            bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]",
+        )
         self.best_so_far: float | None = None
 
     def __call__(self, study: optuna.study.Study, trial: optuna.trial.FrozenTrial) -> None:
-        if self.start_time is None:
-            self.start_time = time.monotonic()
-
-        now = time.monotonic()
-
-        # Per-trial wall time
-        if len(self.trial_times) > 0:
-            trial_dt = now - self.trial_times[-1]
-        else:
-            trial_dt = 0.0
-        self.trial_times.append(now)
-
-        n_done = trial.number + 1
-        # Use len(self.trial_times) (not n_done) because the current
-        # trial's timestamp hasn't been appended yet — line 75 is below.
-        n_prev = len(self.trial_times)
-        rolling_window = min(10, n_prev)
-        avg_trial_time = (
-            (self.trial_times[-1] - self.trial_times[-rolling_window]) / rolling_window
-            if rolling_window > 1
-            else trial_dt
-        )
-
-        remaining = self.n_trials - n_done
-        eta = avg_trial_time * remaining if remaining > 0 else 0.0
-
-        best_value = study.best_value if study.best_trial is not None else None
-        if best_value is not None and (self.best_so_far is None or best_value != self.best_so_far):
+        try:
+            best_value = study.best_value
+        except ValueError:
+            best_value = None  # no completed trials yet (e.g. all pruned)
+        if best_value is not None and best_value != self.best_so_far:
             self.best_so_far = best_value
+            self.pbar.set_postfix({"best": f"{self.best_so_far:.4f}"})
+        self.pbar.update(1)
 
-        trials_per_sec = 1.0 / avg_trial_time if avg_trial_time > 0 else float("inf")
-        eta_str = (
-            f"{eta / 60:.0f}m {eta % 60:.0f}s" if eta >= 60
-            else f"{eta:.0f}s" if eta > 0
-            else "—"
-        )
-        best_str = f"{best_value:.4f}" if best_value is not None else "—"
-
-        print(
-            f"  [{n_done:>4}/{self.n_trials}]  "
-            f"trial #{trial.number:>3}  "
-            f"value={trial.value or 0:.4f}  "
-            f"best={best_str}  "
-            f"trial/s={trials_per_sec:.1f}  "
-            f"ETA={eta_str}",
-            flush=True,
-        )
+    def close(self) -> None:
+        self.pbar.close()
 
 
 # ── Study name ───────────────────────────────────────────────────────────────
@@ -173,34 +141,30 @@ def _model_trial(
     y: np.ndarray,
     groups: np.ndarray | None,
     n_folds: int,
+    trial_timeout: int | None = None,
 ) -> float:
-    """Module-level trial function: tune a classical model on pre-computed features."""
+    """Module-level trial function: tune a classical model on pre-computed features.
+
+    Supports per-trial timeout via ``signal.SIGALRM``.
+    """
+    if trial_timeout is not None:
+        old_handler = signal.signal(signal.SIGALRM, _raise_timeout)
+        signal.alarm(trial_timeout)
+        try:
+            return classical_trial(trial, model_name, X, y, groups, n_folds)
+        except TimeoutError:
+            print(f"  ⏱  Trial #{trial.number} timed out "
+                  f"(> {trial_timeout}s) → scoring 0.0", flush=True)
+            return 0.0
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
     return classical_trial(trial, model_name, X, y, groups, n_folds)
 
 
-def _selection_model_trial(
-    trial: optuna.Trial,
-    model_name: str,
-    feature_df_array: np.ndarray,
-    feature_df_columns: list[str],
-    y: np.ndarray,
-    groups: np.ndarray | None,
-    n_folds: int,
-) -> float:
-    """Module-level trial function: sample feature-selection + tune model.
-
-    Uses cached feature matrix, applies selection per trial, then trains
-    the model.  Picklable (module-level function) for parallel execution.
-    """
-    import pandas as pd
-
-    # Reconstruct DataFrame to use run_selection_pipeline
-    X_df = pd.DataFrame(feature_df_array, columns=feature_df_columns)
-    y_series = pd.Series(y)
-    s = suggest_feature_selection_params(trial)
-    methods = s.get("selection_methods", ["variance"])
-    X_selected = run_selection_pipeline(X_df.copy(), y_series, selection_methods=methods)
-    return classical_trial(trial, model_name, X_selected.values, y, groups, n_folds)
+def _raise_timeout(signum: int, frame: object) -> None:
+    """SIGALRM handler — raises TimeoutError for per-trial timeout."""
+    raise TimeoutError("Trial timed out")
 
 
 def _run_cached_tuning(
@@ -238,42 +202,46 @@ def _run_cached_tuning(
     groups = val_result.participant.values if val_result.participant is not None else None
     feature_columns = val_result.feature_names
 
-    n_jobs = os.cpu_count() or 1
+    # ── Run Boruta once if feature_selection is requested ────────────────
+    if has_selection:
+        print(f"  Running Boruta feature selection …", flush=True)
+        X_df = pd.DataFrame(X_train, columns=feature_columns)
+        y_series = pd.Series(y_train)
+        X_reduced = select_by_boruta(X_df, y_series)
+        X_train = X_reduced.values
+        feature_columns = list(X_reduced.columns)
+        print(f"  Features reduced: {val_result.feature_matrix.shape[1]} → {len(feature_columns)}", flush=True)
+
+    n_jobs = 1
     print(f"  Spawning {n_jobs} worker processes for parallel trials.")
+    print(f"  Per-trial timeout: {tuning_config.trial_timeout_seconds or 'unlimited'}s")
 
-    # Split trials between RF and XGBoost
-    per_model = tuning_config.n_trials // 2
+    # Split trials as evenly as possible between RF and XGBoost.
+    n_rf = math.ceil(tuning_config.n_trials / 2)
+    n_xgb = tuning_config.n_trials - n_rf  # handles odd counts
 
-    for model_name in ("random_forest", "xgboost"):
-        print(f"\n  ── Tuning {model_name} ──")
+    for model_name, n_model_trials in (("random_forest", n_rf), ("xgboost", n_xgb)):
+        print(f"\n  ── Tuning {model_name} ({n_model_trials} trials) ──")
 
-        if has_selection:
-            obj = partial(
-                _selection_model_trial,
-                model_name=model_name,
-                feature_df_array=X_train,
-                feature_df_columns=feature_columns,
-                y=y_train,
-                groups=groups,
-                n_folds=base_config.models.cv_folds,
-            )
-        else:
-            obj = partial(
-                _model_trial,
-                model_name=model_name,
-                X=X_train,
-                y=y_train,
-                groups=groups,
-                n_folds=base_config.models.cv_folds,
-            )
+        obj = partial(
+            _model_trial,
+            model_name=model_name,
+            X=X_train,
+            y=y_train,
+            groups=groups,
+            n_folds=base_config.models.cv_folds,
+            trial_timeout=tuning_config.trial_timeout_seconds,
+        )
 
+        cb = _ProgressCallback(n_model_trials, desc=f"  Tuning {model_name}")
         study.optimize(
             obj,
-            n_trials=per_model,
+            n_trials=n_model_trials,
             timeout=tuning_config.timeout,
             n_jobs=n_jobs,
-            callbacks=[_ProgressCallback(per_model)],
+            callbacks=[cb],
         )
+        cb.close()
 
 
 # ── Pruner selection ─────────────────────────────────────────────────────────
@@ -318,6 +286,14 @@ def run_tuning(
     has_pipeline = bool(cat_labels & _PIPELINE_CATEGORIES)
     use_cached = not has_pipeline and ("classical_models" in cat_labels or "feature_selection" in cat_labels)
 
+    # Warn if pipeline + non-pipeline categories are mixed — the non-pipeline
+    # ones will be silently ignored by PipelineObjective.
+    if has_pipeline:
+        ignored = cat_labels - _PIPELINE_CATEGORIES
+        if ignored:
+            print(f"  ⚠  Categories {sorted(ignored)} are ignored when "
+                  f"pipeline categories are active.", flush=True)
+
     # ── Build objective (full pipeline path) ───────────────────────────────
     if not use_cached:
         _objective = PipelineObjective(
@@ -350,7 +326,7 @@ def run_tuning(
     _ensure_worker_path()
 
     # ── Print header ───────────────────────────────────────────────────────
-    n_jobs = os.cpu_count() if use_cached else 1
+    n_jobs = 1
     print(f"\n{'=' * 70}")
     print(f"  OPTUNA TUNING")
     print(f"{'=' * 70}")
@@ -370,13 +346,15 @@ def run_tuning(
     if use_cached:
         _run_cached_tuning(base_config, tuning_config, study, cat_labels)
     else:
+        cb = _ProgressCallback(tuning_config.n_trials, desc="  Tuning")
         study.optimize(
             _objective,
             n_trials=tuning_config.n_trials,
             timeout=tuning_config.timeout,
             n_jobs=1,
-            callbacks=[_ProgressCallback(tuning_config.n_trials)],
+            callbacks=[cb],
         )
+        cb.close()
 
     elapsed = time.monotonic() - start_time
 
@@ -415,6 +393,79 @@ def run_tuning(
     # ── Post-tuning plots ──────────────────────────────────────────────────
     _save_study_plots(study, study_dir)
 
+    print(f"{'=' * 70}\n")
+
+
+# ── Standalone Boruta runner (no Optuna) ──────────────────────────────────
+
+
+def _run_boruta_once(base_config: Config) -> None:
+    """Run pipeline once + Boruta feature selection (no model tuning)."""
+    print(f"\n{'=' * 70}")
+    print(f"  BORUTA FEATURE SELECTION")
+    print(f"{'=' * 70}")
+
+    print("\n  Running pipeline to cache features …", end=" ", flush=True)
+    sensor_data = load_all_experiment_sensors(
+        base_config.raw_dir,
+        resample_rule=base_config.preprocessing.resample_rule,
+    )
+
+    val_result, test_result = run_participant_train_test_pipeline(
+        sensor_data, base_config, oos_participant=base_config.models.oos_participant,
+    )
+
+    if val_result.feature_matrix.empty or test_result.feature_matrix.empty:
+        print("EMPTY — aborting.")
+        return
+
+    print(f"done  ({val_result.feature_matrix.shape[0]} windows, "
+          f"{val_result.feature_matrix.shape[1]} features).")
+
+    X_full = val_result.feature_matrix
+    y_full = val_result.labels
+    feature_names = val_result.feature_names
+
+    print(f"\n  Running Boruta on {X_full.shape[1]} features …", flush=True)
+    X_selected = select_by_boruta(X_full, y_full)
+    kept = list(X_selected.columns)
+    dropped = [c for c in feature_names if c not in kept]
+
+    print(f"\n  {'=' * 50}")
+    print(f"  Boruta Results")
+    print(f"  {'=' * 50}")
+    print(f"  Features kept:   {len(kept)}/{X_full.shape[1]}")
+    print(f"  Features dropped: {len(dropped)}")
+    if kept:
+        print(f"\n  Kept features:")
+        for name in kept:
+            print(f"    [+] {name}")
+    if dropped:
+        print(f"\n  Dropped features:")
+        for name in dropped:
+            print(f"    [-] {name}")
+
+    # Save the result
+    output_dir = Path(__file__).resolve().parent.parent.parent / ".tmp" / "boruta"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    kept_path = output_dir / "kept_features.csv"
+    with open(kept_path, "w") as f:
+        f.write("\n".join(kept))
+    report_path = output_dir / "boruta_report.txt"
+    with open(report_path, "w") as f:
+        f.write(f"Boruta Feature Selection Report\n")
+        f.write(f"{'=' * 40}\n")
+        f.write(f"Total features: {X_full.shape[1]}\n")
+        f.write(f"Kept:           {len(kept)}\n")
+        f.write(f"Dropped:        {len(dropped)}\n\n")
+        f.write("Kept features:\n")
+        for n in kept:
+            f.write(f"  {n}\n")
+        f.write("\nDropped features:\n")
+        for n in dropped:
+            f.write(f"  {n}\n")
+    print(f"\n  Saved: {kept_path}")
+    print(f"  Saved: {report_path}")
     print(f"{'=' * 70}\n")
 
 

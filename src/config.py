@@ -33,6 +33,13 @@ class FeatureConfig:
     window_size: float = 1.42
     window_overlap: float = 0.27
     frequency_window_size: float | None = None
+    frequency_bands: tuple[tuple[float, float], ...] = (
+        (0.5, 4.0),
+        (4.0, 8.0),
+        (8.0, 13.0),
+        (13.0, 30.0),
+    )
+    rolloff_fraction: float = 0.85
     sensor_windows: dict[str, SensorWindowConfig] = field(default_factory=dict)
     magnitude_channels: bool = True
     cross_sensor_features: bool = True

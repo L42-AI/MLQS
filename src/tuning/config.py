@@ -61,7 +61,7 @@ class TuningConfig:
     storage_url: str | None = "sqlite:///.tmp/tuning/studies.db"
     n_trials: int = 50
     timeout: int | None = None
-    trial_timeout_seconds: int | None = 120  # 2 min per trial
+    trial_timeout_seconds: int | None = 180  # 3 min per trial
     pruner_config: dict | None = field(default_factory=lambda: {"n_startup_trials": 5, "n_warmup_steps": 10})
     sampler_config: dict | None = field(default_factory=lambda: {"n_startup_trials": 5})
     study_name: str | None = None

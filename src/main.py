@@ -512,6 +512,13 @@ def main() -> None:
     )
     argument_parser.add_argument("--eda", action="store_true", help="EDA only")
 
+    # ── Boruta feature selection ─────────────────────────────────────────
+    argument_parser.add_argument(
+        "--boruta",
+        action="store_true",
+        help="Run Boruta feature selection on the cached pipeline (no model tuning)",
+    )
+
     # ── Tuning arguments ─────────────────────────────────────────────────
     argument_parser.add_argument(
         "--tune",
@@ -550,6 +557,12 @@ def main() -> None:
 
     if parsed_args.eda:
         _run_exploratory_analysis(experiment_config)
+        return
+
+    # ── Boruta mode ──────────────────────────────────────────────────────
+    if parsed_args.boruta:
+        from tuning.integration import _run_boruta_once
+        _run_boruta_once(experiment_config)
         return
 
     # ── Tuning mode ──────────────────────────────────────────────────────
