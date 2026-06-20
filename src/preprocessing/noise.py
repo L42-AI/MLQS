@@ -1,5 +1,7 @@
 """Noise-removal filters for sensor time series."""
 
+import inspect
+
 import numpy as np
 import pandas as pd
 from scipy import signal
@@ -60,8 +62,19 @@ def apply_filter_to_columns(
     selected_filter = FILTER_NAME_TO_FUNCTION.get(filter_method)
     if selected_filter is None:
         raise ValueError(f"Unknown filter: {filter_method}")
+
+    # Only forward keyword arguments that the specific filter function accepts.
+    # (butterworth expects cutoff_frequency, sample_rate_hz, filter_order, filter_type;
+    #  savitzky_golay expects window_length, polyorder;
+    #  moving_average expects window.)
+    sig = inspect.signature(selected_filter)
+    valid_kwargs = {
+        k: v for k, v in filter_kwargs.items()
+        if k in sig.parameters
+    }
+
     filtered_data = sensor_data.copy()
     for column in columns:
         if column in filtered_data.columns:
-            filtered_data[column] = selected_filter(filtered_data[column], **filter_kwargs)
+            filtered_data[column] = selected_filter(filtered_data[column], **valid_kwargs)
     return filtered_data

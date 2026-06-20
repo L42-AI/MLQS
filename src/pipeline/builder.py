@@ -147,13 +147,19 @@ def _preprocess(
     fc = config.features
 
     if pp.filter_method:
+        filter_kwargs: dict = {
+            "cutoff_frequency": pp.filter_cutoff,
+            "sample_rate_hz": sample_rate,
+            "filter_order": pp.filter_order,
+            "filter_type": pp.filter_type,
+        }
+        if pp.filter_method == "savitzky_golay":
+            filter_kwargs["window_length"] = pp.savitzky_golay_window_length
+            filter_kwargs["polyorder"] = pp.savitzky_golay_polyorder
         data = apply_filter_to_columns(
             data, sensor_columns,
             filter_method=pp.filter_method,
-            cutoff_frequency=pp.filter_cutoff,
-            sample_rate_hz=sample_rate,
-            filter_order=pp.filter_order,
-            filter_type=pp.filter_type,
+            **filter_kwargs,
         )
 
     impute = IMPUTATION_METHOD_TO_FUNCTION.get(
