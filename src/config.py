@@ -9,16 +9,30 @@ from typing import Literal
 from consts import SRC
 
 
+# ── Known motion sensors ──────────────────────────────────────────────────────
+_MOTION_SENSORS: tuple[str, ...] = (
+    "Accelerometer",
+    "AccelerometerUncalibrated",
+    "Gyroscope",
+    "GyroscopeUncalibrated",
+    "TotalAcceleration",
+    "WatchAccelerometer",
+    "WatchGravity",
+    "WatchGyroscope",
+    "WatchTotalAcceleration",
+)
+
+
 @dataclass
 class PreprocessingConfig:
     filter_method: Literal["butterworth", "moving_average", "savitzky_golay"] = "savitzky_golay"
-    filter_cutoff: float = 0.99
+    filter_cutoff: float = 3.408
     filter_order: int = 4
-    filter_type: Literal["low", "high", "band"] = "high"
-    savitzky_golay_window_length: int = 11
+    filter_type: Literal["low", "high", "band"] = "band"
+    savitzky_golay_window_length: int = 17
     savitzky_golay_polyorder: int = 1
-    imputation_method: Literal["interpolate", "ffill", "knn"] = "ffill"
-    imputation_max_gap: int = 19
+    imputation_method: Literal["interpolate", "ffill", "knn"] = "interpolate"
+    imputation_max_gap: int = 14
     resample_rule: str = "100ms"
 
 
@@ -30,19 +44,22 @@ class SensorWindowConfig:
 
 @dataclass
 class FeatureConfig:
-    window_size: float = 1.42
-    window_overlap: float = 0.27
-    frequency_window_size: float | None = None
+    window_size: float = 2.315
+    window_overlap: float = 0.501
+    frequency_window_size: float | None = 3.574
     frequency_bands: tuple[tuple[float, float], ...] = (
-        (0.5, 4.0),
-        (4.0, 8.0),
-        (8.0, 13.0),
-        (13.0, 30.0),
+        (0.5, 1.282),
+        (1.282, 18.077),
+        (18.077, 25.837),
+        (25.837, 30.0),
     )
     rolloff_fraction: float = 0.85
-    sensor_windows: dict[str, SensorWindowConfig] = field(default_factory=dict)
-    magnitude_channels: bool = True
-    cross_sensor_features: bool = True
+    sensor_windows: dict[str, SensorWindowConfig] = field(default_factory=lambda: {
+        "HeartRate": SensorWindowConfig(base_window_seconds=25.073),
+        **{s: SensorWindowConfig(base_window_seconds=2.737) for s in _MOTION_SENSORS},
+    })
+    magnitude_channels: bool = False
+    cross_sensor_features: bool = False
     time_domain: bool = True
     frequency_domain: bool = True
     statistical: bool = True
