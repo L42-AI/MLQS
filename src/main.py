@@ -518,6 +518,11 @@ def main() -> None:
         action="store_true",
         help="Run Boruta feature selection on the cached pipeline (no model tuning)",
     )
+    argument_parser.add_argument(
+        "--boruta-features",
+        action="store_true",
+        help="Use Boruta-confirmed features from a previous --boruta run",
+    )
 
     # ── Tuning arguments ─────────────────────────────────────────────────
     argument_parser.add_argument(
@@ -578,7 +583,7 @@ def main() -> None:
             n_trials=parsed_args.trials,
             study_name=parsed_args.study_name,
         )
-        run_tuning(experiment_config, tc)
+        run_tuning(experiment_config, tc, boruta_features=parsed_args.boruta_features)
         return
 
     # ── Load data ────────────────────────────────────────────────────────
@@ -629,6 +634,24 @@ def main() -> None:
     if val_result.feature_matrix.empty or test_result.feature_matrix.empty:
         print("Feature extraction produced empty result — aborting")
         return
+
+    # ── Apply Boruta feature mask (single-run path) ──────────────────────
+    if parsed_args.boruta_features:
+        from tuning.integration import KEPT_FEATURES_PATH
+        if KEPT_FEATURES_PATH.exists():
+            kept_names = [
+                line.strip()
+                for line in KEPT_FEATURES_PATH.read_text().splitlines()
+                if line.strip()
+            ]
+            feature_columns = list(val_result.feature_matrix.columns)
+            keep_idx = [i for i, col in enumerate(feature_columns) if col in kept_names]
+            val_result.feature_matrix = val_result.feature_matrix.iloc[:, keep_idx]
+            test_result.feature_matrix = test_result.feature_matrix.iloc[:, keep_idx]
+            print(f"  [boruta] Filtered to {len(keep_idx)} Boruta-confirmed features.", flush=True)
+        else:
+            print(f"  ⚠  No Boruta feature list found at {KEPT_FEATURES_PATH}. "
+                  f"Run `--boruta` first.", flush=True)
 
     print(f"Train windows: {val_result.feature_matrix.shape[0]}  "
           f"Test windows: {test_result.feature_matrix.shape[0]}")
