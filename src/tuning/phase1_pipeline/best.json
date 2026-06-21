@@ -1,0 +1,40 @@
+{
+  "study_name": "phase1_pipeline",
+  "best_trial_number": 145,
+  "best_value": 0.4664118036173808,
+  "best_params": {
+    "filter_method": "savitzky_golay",
+    "filter_cutoff": 3.408334597552675,
+    "filter_type": "band",
+    "filter_window_length": 17,
+    "filter_polyorder": 1,
+    "imputation_method": "interpolate",
+    "imputation_max_gap": 14,
+    "window_size": 2.3146599712810856,
+    "window_overlap": 0.5007030247618611,
+    "use_frequency_window": true,
+    "frequency_window_size": 3.5740890922061066,
+    "use_sensor_windows": true,
+    "sensor_window_HeartRate": 25.072789180806204,
+    "sensor_window_motion": 2.737427042591377,
+    "time_domain": true,
+    "frequency_domain": true,
+    "statistical": true,
+    "magnitude_channels": false,
+    "cross_sensor_features": false,
+    "band_boundary_1": 1.2819382825995802,
+    "band_boundary_2": 18.07730592782913,
+    "band_boundary_3": 25.836737086465686
+  },
+  "categories": [
+    "features",
+    "preprocessing",
+    "sensor_windows",
+    "windowing"
+  ],
+  "n_trials": 1,
+  "n_jobs": 1,
+  "pruner": "MedianPruner",
+  "elapsed_seconds": 28.51804045800236,
+  "timestamp": "2026-06-21T11:38:56.452051+00:00"
+}
