@@ -32,7 +32,7 @@ from config import Config, PreprocessingConfig, FeatureConfig, ModelConfig
 from tuning import TuningCategory, TuningConfig, run_tuning
 from data.loader import compute_sensor_summary, detect_data_quality_issues, load_all_experiment_sensors
 from models.classical import build_classifier
-from models.deep import build_deep_classifier, prepare_sequences, train_deep_model
+from models.deep import LSTMClassifier, TCNClassifier, prepare_sequences, train_deep_model
 from models.evaluation import (
     build_model_comparison_table,
     compute_classification_metrics,
@@ -481,9 +481,9 @@ def main() -> None:
     argument_parser = argparse.ArgumentParser(prog="mlqs")
     argument_parser.add_argument(
         "--model",
-        choices=["classical", "deep"],
+        choices=["classical", "deep", "lstm", "tcn"],
         default=None,
-        help="Run model after feature pipeline",
+        help="Run model after feature pipeline: classical (RF+XGBoost), deep (LSTM or TCN), lstm, or tcn",
     )
     argument_parser.add_argument(
         "--split",
@@ -537,7 +537,7 @@ def main() -> None:
         help=(
             "Comma-separated list of categories to tune: "
             "preprocessing, windowing, sensor_windows, features, "
-            "feature_selection, classical_models, deep_models  (default: all)"
+            "random_forest, xgboost, lstm, tcn  (default: all)"
         ),
     )
     argument_parser.add_argument(
@@ -694,6 +694,22 @@ def main() -> None:
     elif parsed_args.model == "deep":
         _train_and_evaluate_deep_model(
             X_val, X_test, y_val, y_test,
+            model_config=experiment_config.models,
+            model_name="lstm",
+            cv_name=cv_groups_name,
+        )
+    elif parsed_args.model == "lstm":
+        _train_and_evaluate_deep_model(
+            X_val, X_test, y_val, y_test,
+            model_config=experiment_config.models,
+            model_name="lstm",
+            cv_name=cv_groups_name,
+        )
+    elif parsed_args.model == "tcn":
+        _train_and_evaluate_deep_model(
+            X_val, X_test, y_val, y_test,
+            model_config=experiment_config.models,
+            model_name="tcn",
             cv_name=cv_groups_name,
         )
 
@@ -811,18 +827,36 @@ def _train_and_evaluate_classical_models(
 def _train_and_evaluate_deep_model(
     X_val: np.ndarray, X_test: np.ndarray,
     y_val: np.ndarray, y_test: np.ndarray,
+    model_config: ModelConfig | None = None,
+    model_name: str = "lstm",
     cv_name: str = "block",
 ) -> None:
-    """Train both LSTM and TCN on *val* participants, evaluate on OOS *test*.
+    """Train a deep model from config on *val* participants, evaluate on OOS *test*.
 
-    Note: unlike the classical model path, this function does **not**
-    perform cross-validation.  It trains once on the full validation set
-    and evaluates once on the held-out test set — a single hold-out split.
+    Parameters
+    ----------
+    model_name :
+        ``"lstm"`` or ``"tcn"`` — which sub-config to read hyperparameters from.
     """
+    _CHANNEL_MAP: dict[str, list[int]] = {
+        "small": [16, 32, 32],
+        "medium": [32, 64, 64],
+        "large": [64, 128, 128],
+    }
+
+    mc = model_config or ModelConfig()
+    if model_name == "lstm":
+        cfg = mc.lstm
+        model_cls = LSTMClassifier
+    elif model_name == "tcn":
+        cfg = mc.tcn
+        model_cls = TCNClassifier
+    else:
+        raise ValueError(f"Unknown deep model: {model_name}")
+
     sequence_length = min(32, len(X_val) // 10)
-    batch_size = 32
-    training_loader = prepare_sequences(X_val, y_val, sequence_length, batch_size)
-    test_loader = prepare_sequences(X_test, y_test, sequence_length, batch_size)
+    training_loader = prepare_sequences(X_val, y_val, sequence_length, cfg.batch_size)
+    test_loader = prepare_sequences(X_test, y_test, sequence_length, cfg.batch_size)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     holdout_label = (
@@ -831,30 +865,41 @@ def _train_and_evaluate_deep_model(
     )
     print(f"  Hold-out: train on {len(X_val)} windows, test on {len(X_test)} windows ({holdout_label})")
 
-    for model_type in ("lstm", "tcn"):
-        print(f"\n  ── {model_type.upper()} ──", flush=True)
-        deep_classifier = build_deep_classifier(
-            model_type=model_type,
+    print(f"\n  ── {model_name.upper()} ──", flush=True)
+    if model_name == "tcn":
+        channel_sizes = _CHANNEL_MAP.get(cfg.channel_config)
+        deep_classifier = TCNClassifier(
             input_size=X_val.shape[1],
+            channel_sizes=channel_sizes or [16, 32, 32],
             num_classes=len(np.unique(y_val)),
+            kernel_size=cfg.kernel_size,
+            dropout_probability=cfg.dropout,
         )
-        print(f"  Model: {type(deep_classifier).__name__} on {device}")
-
-        train_deep_model(
-            deep_classifier,
-            training_loader,
-            num_epochs=20,
-            learning_rate=0.001,
-            device=device,
+    else:
+        deep_classifier = LSTMClassifier(
+            input_size=X_val.shape[1],
+            hidden_size=cfg.hidden_size,
+            num_layers=cfg.num_layers,
+            num_classes=len(np.unique(y_val)),
+            dropout_probability=cfg.dropout,
         )
+    print(f"  Model: {type(deep_classifier).__name__} on {device}")
 
-        deep_classifier.eval()
-        all_predictions, all_true_labels = [], []
-        with torch.no_grad():
-            for batch_inputs, batch_labels in test_loader:
-                logits = deep_classifier(batch_inputs.to(device))
-                all_predictions.extend(logits.argmax(1).cpu().numpy())
-                all_true_labels.extend(batch_labels.numpy())
+    train_deep_model(
+        deep_classifier,
+        training_loader,
+        num_epochs=cfg.epochs,
+        learning_rate=cfg.learning_rate,
+        device=device,
+    )
+
+    deep_classifier.eval()
+    all_predictions, all_true_labels = [], []
+    with torch.no_grad():
+        for batch_inputs, batch_labels in test_loader:
+            logits = deep_classifier(batch_inputs.to(device))
+            all_predictions.extend(logits.argmax(1).cpu().numpy())
+            all_true_labels.extend(batch_labels.numpy())
 
         metric_scores = compute_classification_metrics(
             np.array(all_true_labels), np.array(all_predictions)

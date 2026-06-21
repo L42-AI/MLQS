@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, Sequence
 
 from consts import SRC
 
@@ -67,14 +67,64 @@ class FeatureConfig:
 
 
 @dataclass
+class RandomForestConfig:
+    """Random Forest hyperparameters (defaults = scikit-learn defaults)."""
+    n_estimators: int = 100
+    max_depth: int | None = None
+    min_samples_split: int = 2
+    min_samples_leaf: int = 1
+    max_features: str | None = "sqrt"
+    bootstrap: bool = True
+
+
+@dataclass
+class XGBoostConfig:
+    """XGBoost hyperparameters (defaults = library defaults)."""
+    n_estimators: int = 100
+    learning_rate: float = 0.1
+    max_depth: int = 6
+    subsample: float = 1.0
+    colsample_bytree: float = 1.0
+    gamma: float = 0.0
+    reg_alpha: float = 0.0
+    reg_lambda: float = 1.0
+    min_child_weight: int = 1
+
+
+@dataclass
+class LSTMConfig:
+    """LSTM hyperparameters (from best tuning trial)."""
+    hidden_size: int = 128
+    num_layers: int = 2
+    dropout: float = 0.2
+    learning_rate: float = 0.001
+    num_epochs: int = 100
+    batch_size: int = 32
+
+
+@dataclass
+class TCNConfig:
+    """TCN hyperparameters (from best tuning trial)."""
+    hidden_size: int = 176
+    num_layers: int = 4
+    dropout: float = 0.414
+    kernel_size: int = 5
+    channel_config: Literal["small", "medium", "large"] = "small"
+    learning_rate: float = 0.0035
+    num_epochs: int = 110
+    batch_size: int = 32
+
+
+@dataclass
 class ModelConfig:
     test_size: float = 0.2
     cv_folds: int = 5
-    deep_model: Literal["lstm", "tcn"] = "lstm"
-    deep_epochs: int = 100
-    deep_batch_size: int = 32
-    deep_learning_rate: float = 0.001
     oos_participant: str = "Kim"
+
+    random_forest: RandomForestConfig = field(default_factory=RandomForestConfig)
+    xgboost: XGBoostConfig = field(default_factory=XGBoostConfig)
+    lstm: LSTMConfig = field(default_factory=LSTMConfig)
+    tcn: TCNConfig = field(default_factory=TCNConfig)
 
 
 @dataclass

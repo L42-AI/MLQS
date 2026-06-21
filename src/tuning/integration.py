@@ -6,11 +6,10 @@ objective function, and parallelisation settings.
 
 Execution strategies
 --------------------
-* **Cached pipeline** (``classical_models`` ± ``feature_selection``, no
-  ``preprocessing``/``windowing``/``sensor_windows``/``features``):
-  runs the full pipeline **once**, then optimises model hyperparameters
-  (and optionally feature-selection params) in parallel against the
-  cached feature matrix (``n_jobs=os.cpu_count()``).
+* **Cached pipeline** (one of ``random_forest``/``xgboost``/``lstm``/``tcn``,
+  no ``preprocessing``/``windowing``/``sensor_windows``/``features``):
+  runs the full pipeline **once**, then tunes the requested model's
+  hyperparameters against the cached feature matrix.
 
 * **Full pipeline** (any of ``preprocessing``/``windowing``/
   ``sensor_windows``/``features``): each trial re-runs the pipeline
@@ -24,6 +23,7 @@ import math
 import os
 import signal
 import time
+from collections.abc import Callable
 from copy import deepcopy
 from datetime import datetime, timezone
 from functools import partial
@@ -43,7 +43,8 @@ from features.selection import select_by_boruta
 from pipeline.builder import run_participant_train_test_pipeline
 
 from .config import TuningCategory, TuningConfig
-from .objectives import PipelineObjective, classical_trial
+from .objectives import PipelineObjective, _build_and_train_deep, classical_trial
+from .search_spaces import suggest_lstm_params, suggest_rf_params, suggest_tcn_params, suggest_xgb_params
 
 TUNING_OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent / ".tmp" / "tuning"
 
@@ -54,7 +55,7 @@ _PIPELINE_CATEGORIES = {"preprocessing", "windowing", "sensor_windows", "feature
 
 
 class _ProgressCallback:
-    """Optuna callback that updates a tqdm progress bar."""
+    """Optuna callback that updates a tqdm progress bar and prints trial results."""
 
     def __init__(self, n_trials: int, desc: str = "Tuning") -> None:
         self.pbar = tqdm(
@@ -64,15 +65,38 @@ class _ProgressCallback:
             bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]",
         )
         self.best_so_far: float | None = None
+        self.n_pruned = 0
+        self.n_failed = 0
 
     def __call__(self, study: optuna.study.Study, trial: optuna.trial.FrozenTrial) -> None:
+        # Track pruned / failed
+        if trial.state == optuna.trial.TrialState.PRUNED:
+            self.n_pruned += 1
+        elif trial.state == optuna.trial.TrialState.FAIL:
+            self.n_failed += 1
+
+        # Print trial result line
+        duration = trial.duration.total_seconds() if trial.duration else 0.0
+        if trial.value is not None:
+            print(f"    Trial #{trial.number:>3d}  F1={trial.value:.4f}  ({duration:.1f}s)", flush=True)
+        elif trial.state == optuna.trial.TrialState.PRUNED:
+            print(f"    Trial #{trial.number:>3d}  PRUNED  ({duration:.1f}s)", flush=True)
+        elif trial.state == optuna.trial.TrialState.FAIL:
+            print(f"    Trial #{trial.number:>3d}  FAILED  ({duration:.1f}s)", flush=True)
+
+        # Update progress bar
         try:
             best_value = study.best_value
         except ValueError:
-            best_value = None  # no completed trials yet (e.g. all pruned)
+            best_value = None
         if best_value is not None and best_value != self.best_so_far:
             self.best_so_far = best_value
-            self.pbar.set_postfix({"best": f"{self.best_so_far:.4f}"})
+            postfix = {"best": f"{self.best_so_far:.4f}"}
+            if self.n_pruned:
+                postfix["pruned"] = self.n_pruned
+            if self.n_failed:
+                postfix["failed"] = self.n_failed
+            self.pbar.set_postfix(postfix)
         self.pbar.update(1)
 
     def close(self) -> None:
@@ -137,6 +161,7 @@ def _save_study_plots(study: optuna.Study, output_dir: Path) -> None:
 def _model_trial(
     trial: optuna.Trial,
     model_name: str,
+    suggest_fn: Callable,
     X: np.ndarray,
     y: np.ndarray,
     groups: np.ndarray | None,
@@ -151,7 +176,7 @@ def _model_trial(
         old_handler = signal.signal(signal.SIGALRM, _raise_timeout)
         signal.alarm(trial_timeout)
         try:
-            return classical_trial(trial, model_name, X, y, groups, n_folds)
+            return classical_trial(trial, model_name, suggest_fn, X, y, groups, n_folds)
         except TimeoutError:
             print(f"  ⏱  Trial #{trial.number} timed out "
                   f"(> {trial_timeout}s) → scoring 0.0", flush=True)
@@ -159,7 +184,7 @@ def _model_trial(
         finally:
             signal.alarm(0)
             signal.signal(signal.SIGALRM, old_handler)
-    return classical_trial(trial, model_name, X, y, groups, n_folds)
+    return classical_trial(trial, model_name, suggest_fn, X, y, groups, n_folds)
 
 
 def _raise_timeout(signum: int, frame: object) -> None:
@@ -178,23 +203,16 @@ def _run_cached_tuning(
     cat_labels: set[str],
     boruta_features: bool = False,
 ) -> None:
-    """Run feature pipeline once, then tune models with cached data.
+    """Run feature pipeline once, then tune requested models with cached data.
 
-    Handles:
-    * ``classical_models`` — RF / XGBoost on 2-D features.
-    * ``deep_models`` — LSTM / TCN on sequences.
-    * Both — classical models first, then deep models sequentially.
-
-    Pipeline categories must NOT be present (they force per-trial re-runs).
-    Sequential execution only (``n_jobs=1``) — SIGALRM per-trial timeouts
-    and PyTorch training don't parallelise across workers.
+    Each selected model gets ``n_trials`` (``tuning_config.n_trials``) allocated
+    independently.  Pipeline categories must NOT be present (they force per-trial
+    re-runs).  Sequential execution only (``n_jobs=1``).
 
     Boruta feature selection is NOT part of tuning — run separately with
-    ``--boruta``, then use ``--categories classical_models`` on the
-    reduced feature set.
+    ``--boruta``, then use ``--boruta-features`` when tuning.
     """
-    has_classical = "classical_models" in cat_labels
-    has_deep = "deep_models" in cat_labels
+    n_trials = tuning_config.n_trials
 
     print("\n  Running pipeline once to cache features …", end=" ", flush=True)
     sensor_data = load_all_experiment_sensors(
@@ -226,7 +244,6 @@ def _run_cached_tuning(
                 for line in KEPT_FEATURES_PATH.read_text().splitlines()
                 if line.strip()
             ]
-            # Find intersection of kept features with actual columns
             keep_idx = [i for i, col in enumerate(feature_columns) if col in kept_names]
             X_train = X_train[:, keep_idx]
             feature_columns = [feature_columns[i] for i in keep_idx]
@@ -235,63 +252,88 @@ def _run_cached_tuning(
             print(f"  ⚠  No Boruta feature list found at {KEPT_FEATURES_PATH}. "
                   f"Run `--boruta` first.", flush=True)
 
-    n_jobs = 1
     print(f"\n  Per-trial timeout: {tuning_config.trial_timeout_seconds or 'unlimited'}s")
 
-    # ── Classical models (RF / XGBoost) ────────────────────────────────────
-    if has_classical:
+    # ── Random Forest ──────────────────────────────────────────────────────
+    if "random_forest" in cat_labels:
         print(f"\n{'─' * 60}")
-        print(f"  Classical model tuning")
+        print(f"  Random Forest ({n_trials} trials)")
         print(f"{'─' * 60}")
+        obj = partial(
+            _model_trial,
+            model_name="random_forest",
+            suggest_fn=suggest_rf_params,
+            X=X_train, y=y_train, groups=groups,
+            n_folds=base_config.models.cv_folds,
+            trial_timeout=tuning_config.trial_timeout_seconds,
+        )
+        cb = _ProgressCallback(n_trials, desc="  RandomForest")
+        study.optimize(obj, n_trials=n_trials, timeout=tuning_config.timeout,
+                       n_jobs=1, callbacks=[cb])
+        cb.close()
 
-        n_rf = math.ceil(tuning_config.n_trials / 2)
-        n_xgb = tuning_config.n_trials - n_rf
-
-        for model_name, n_model_trials in (("random_forest", n_rf), ("xgboost", n_xgb)):
-            print(f"\n  Tuning {model_name} ({n_model_trials} trials)")
-
-            obj = partial(
-                _model_trial,
-                model_name=model_name,
-                X=X_train,
-                y=y_train,
-                groups=groups,
-                n_folds=base_config.models.cv_folds,
-                trial_timeout=tuning_config.trial_timeout_seconds,
-            )
-
-            cb = _ProgressCallback(n_model_trials, desc=f"  {model_name}")
-            study.optimize(
-                obj,
-                n_trials=n_model_trials,
-                timeout=tuning_config.timeout,
-                n_jobs=n_jobs,
-                callbacks=[cb],
-            )
-            cb.close()
-
-    # ── Deep models (LSTM / TCN) ───────────────────────────────────────────
-    if has_deep:
-        from .objectives import DeepModelObjective
-
+    # ── XGBoost ────────────────────────────────────────────────────────────
+    if "xgboost" in cat_labels:
         print(f"\n{'─' * 60}")
-        print(f"  Deep model tuning")
+        print(f"  XGBoost ({n_trials} trials)")
         print(f"{'─' * 60}")
-
-        deep_obj = DeepModelObjective(
-            X=X_train,
-            y=y_train,
-            sequence_length=32,  # 32 windows per sequence
+        obj = partial(
+            _model_trial,
+            model_name="xgboost",
+            suggest_fn=suggest_xgb_params,
+            X=X_train, y=y_train, groups=groups,
+            n_folds=base_config.models.cv_folds,
+            trial_timeout=tuning_config.trial_timeout_seconds,
         )
+        cb = _ProgressCallback(n_trials, desc="  XGBoost")
+        study.optimize(obj, n_trials=n_trials, timeout=tuning_config.timeout,
+                       n_jobs=1, callbacks=[cb])
+        cb.close()
 
-        cb = _ProgressCallback(tuning_config.n_trials, desc="  deep")
-        study.optimize(
-            deep_obj,
-            n_trials=tuning_config.n_trials,
-            timeout=tuning_config.timeout,
-            n_jobs=1,
-            callbacks=[cb],
+    # ── LSTM ───────────────────────────────────────────────────────────────
+    if "lstm" in cat_labels:
+        from models.deep import LSTMClassifier
+        print(f"\n{'─' * 60}")
+        print(f"  LSTM ({n_trials} trials)")
+        print(f"{'─' * 60}")
+        obj = partial(
+            _build_and_train_deep,
+            suggest_fn=suggest_lstm_params,
+            model_builder=lambda input_size, num_classes, **hp: LSTMClassifier(
+                input_size=input_size,
+                hidden_size=hp.get("hidden_size", 128),
+                num_layers=hp.get("num_layers", 2),
+                num_classes=num_classes,
+                dropout_probability=hp.get("dropout", 0.2),
+            ),
+            X=X_train, y=y_train,
         )
+        cb = _ProgressCallback(n_trials, desc="  LSTM")
+        study.optimize(obj, n_trials=n_trials, timeout=tuning_config.timeout,
+                       n_jobs=1, callbacks=[cb])
+        cb.close()
+
+    # ── TCN ────────────────────────────────────────────────────────────────
+    if "tcn" in cat_labels:
+        from models.deep import TCNClassifier
+        print(f"\n{'─' * 60}")
+        print(f"  TCN ({n_trials} trials)")
+        print(f"{'─' * 60}")
+        obj = partial(
+            _build_and_train_deep,
+            suggest_fn=suggest_tcn_params,
+            model_builder=lambda input_size, num_classes, **hp: TCNClassifier(
+                input_size=input_size,
+                channel_sizes=hp.get("channel_sizes", [16, 32, 32]),
+                num_classes=num_classes,
+                kernel_size=hp.get("kernel_size", 5),
+                dropout_probability=hp.get("dropout", 0.2),
+            ),
+            X=X_train, y=y_train,
+        )
+        cb = _ProgressCallback(n_trials, desc="  TCN")
+        study.optimize(obj, n_trials=n_trials, timeout=tuning_config.timeout,
+                       n_jobs=1, callbacks=[cb])
         cb.close()
 
 
@@ -301,12 +343,12 @@ def _run_cached_tuning(
 def _select_pruner(cat_labels: set[str]) -> optuna.pruners.BasePruner:
     """Choose a pruner based on the active tuning categories.
 
-    * ``deep_models`` → :class:`~optuna.pruners.HyperbandPruner` (best for
+    * ``lstm`` / ``tcn`` → :class:`~optuna.pruners.HyperbandPruner` (best for
       epoch-based iterative training).
     * Everything else → :class:`~optuna.pruners.MedianPruner` (good general
       purpose for folds / single-report objectives).
     """
-    if "deep_models" in cat_labels:
+    if {"lstm", "tcn"} & cat_labels:
         return HyperbandPruner(
             min_resource=5,       # earliest epoch at which pruning may happen
             max_resource=200,     # upper bound (matches search_spaces max_epochs)
@@ -336,7 +378,7 @@ def run_tuning(
     # "Cached" = no pipeline categories → run pipeline once, parallel trials.
     # "Full"   = any pipeline category → per-trial pipeline, sequential.
     has_pipeline = bool(cat_labels & _PIPELINE_CATEGORIES)
-    non_pipeline_cats = {"classical_models", "deep_models"}
+    non_pipeline_cats = {"random_forest", "xgboost", "lstm", "tcn"}
     use_cached = not has_pipeline and bool(cat_labels & non_pipeline_cats)
 
     # Warn if pipeline + non-pipeline categories are mixed — the non-pipeline

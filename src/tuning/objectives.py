@@ -1,18 +1,16 @@
 """Optuna objective functions for pipeline-level and model-level tuning.
 
-Three objectives are provided at different levels of granularity:
+Objectives:
 
 * ``PipelineObjective`` — tunes preprocessing + windowing + features end-to-end.
-* ``ClassicalModelObjective`` — tunes RF / XGBoost on pre-computed features.
-* ``DeepModelObjective`` — tunes LSTM / TCN on pre-computed sequences.
-
-All objectives support Optuna's pruning API via
-:meth:`optuna.Trial.report` + :meth:`optuna.Trial.should_prune`.
+* ``classical_trial`` — CV-based trial for RF / XGBoost on pre-computed features.
+* ``_build_and_train_deep`` — epoch-based trial for LSTM / TCN on sequences.
 """
 
 from __future__ import annotations
 
 import signal
+from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
 
@@ -24,18 +22,20 @@ from sklearn.preprocessing import LabelEncoder
 from config import Config, FeatureConfig, ModelConfig, PreprocessingConfig, SensorWindowConfig
 from data.loader import load_all_experiment_sensors
 from models.classical import build_classifier
-from models.deep import build_deep_classifier, prepare_sequences, train_deep_model
+from models.deep import prepare_sequences
 from models.evaluation import compute_classification_metrics
 from pipeline.builder import run_participant_train_test_pipeline
 
 from .search_spaces import (
-    suggest_classical_model_params,
-    suggest_deep_model_params,
     suggest_feature_params,
     suggest_feature_selection_params,
+    suggest_lstm_params,
     suggest_preprocessing_params,
+    suggest_rf_params,
     suggest_sensor_window_params,
+    suggest_tcn_params,
     suggest_windowing_params,
+    suggest_xgb_params,
     _MOTION_SENSORS,
 )
 
@@ -250,6 +250,7 @@ class PipelineObjective:
 def classical_trial(
     trial: optuna.Trial,
     model_name: str,
+    suggest_fn: Callable,
     X: np.ndarray,
     y: np.ndarray,
     groups: np.ndarray | None = None,
@@ -261,6 +262,8 @@ def classical_trial(
     ----------
     model_name :
         ``"random_forest"`` or ``"xgboost"``.
+    suggest_fn :
+        Search-space function (``suggest_rf_params`` or ``suggest_xgb_params``).
     X :
         Feature matrix.
     y :
@@ -274,18 +277,18 @@ def classical_trial(
     -------
     Mean CV F1 score across folds.
     """
-    params = suggest_classical_model_params(trial, model_name)
-    model_name = params.pop("model_name")
-    hp = _rename_params_for_model(model_name, params)
+    hp = suggest_fn(trial)
 
     from sklearn.model_selection import GroupKFold, KFold
 
     if groups is not None and len(np.unique(groups)) >= 2:
-        cv = GroupKFold(n_splits=n_folds)
+        n_splits = min(n_folds, len(np.unique(groups)))
+        cv = GroupKFold(n_splits=n_splits)
     else:
         cv = KFold(n_splits=min(5, len(X) // 10))
 
     fold_f1s: list[float] = []
+    n_folds_actual = cv.get_n_splits()
     for fold_idx, (train_idx, val_idx) in enumerate(cv.split(X, y, groups=groups)):
         clf = build_classifier(model_name, **hp)
         clf.fit(X[train_idx], y[train_idx])
@@ -293,57 +296,26 @@ def classical_trial(
         metrics = compute_classification_metrics(y[val_idx], preds)
         f1 = metrics["f1"]
         fold_f1s.append(f1)
+        print(f"      fold {fold_idx + 1}/{n_folds_actual}  F1={f1:.4f}", flush=True)
 
         trial.report(f1, step=fold_idx)
         if trial.should_prune():
+            print(f"      → pruned (mean so far: {np.mean(fold_f1s):.4f})", flush=True)
             raise optuna.TrialPruned()
 
-    return float(np.mean(fold_f1s))
-
-
-class ClassicalModelObjective:
-    """Tune Random Forest or XGBoost on **pre-computed** features.
-
-    .. deprecated::
-        Use :func:`classical_trial` with ``functools.partial`` instead,
-        which is picklable and supports ``study.optimize(n_jobs=...)``.
-
-    Parameters
-    ----------
-    model_name :
-        ``"random_forest"`` or ``"xgboost"``.
-    X :
-        Feature matrix.
-    y :
-        Labels.
-    groups :
-        Group labels for GroupKFold (e.g. participant IDs).
-    n_folds :
-        Number of CV folds.
-    """
-
-    def __init__(
-        self,
-        model_name: str,
-        X: np.ndarray,
-        y: np.ndarray,
-        groups: np.ndarray | None = None,
-        n_folds: int = 5,
-    ) -> None:
-        self.model_name = model_name
-        self.X = X
-        self.y = y
-        self.groups = groups
-        self.n_folds = min(n_folds, len(np.unique(groups)) if groups is not None else 5)
-
-    def __call__(self, trial: optuna.Trial) -> float:
-        return classical_trial(trial, self.model_name, self.X, self.y, self.groups, self.n_folds)
+    mean_f1 = float(np.mean(fold_f1s))
+    return mean_f1
 
 
 def _rename_params_for_model(model_name: str, raw: dict) -> dict:
     """Strip per-model prefixes from Optuna-suggested param names.
 
     ``rf_n_estimators`` → ``n_estimators``, ``xgb_n_estimators`` → ``n_estimators``.
+
+    .. deprecated::
+        Only kept for backward compat with older study checkpoints.
+        New per-model suggest functions (``suggest_rf_params`` etc.) return
+        unprefixed names directly.
     """
     prefix = "rf_" if model_name == "random_forest" else "xgb_"
     renamed: dict = {}
@@ -357,126 +329,83 @@ def _rename_params_for_model(model_name: str, raw: dict) -> dict:
     return renamed
 
 
-# ── Deep model objective ─────────────────────────────────────────────────────
+# ── Deep model trials ────────────────────────────────────────────────────────
 
 
-class DeepModelObjective:
-    """Tune LSTM or TCN hyperparameters on pre-computed sequences.
+def _build_and_train_deep(
+    trial: optuna.Trial,
+    suggest_fn: Callable,
+    model_builder: Callable,
+    X: np.ndarray,
+    y: np.ndarray,
+    sequence_length: int = 32,
+    n_trials_for_pruning: int = 5,
+) -> float:
+    """Shared loop for deep model tuning (LSTM / TCN).
 
     Parameters
     ----------
-    X :
-        Feature matrix (2-D windows × features).
-    y :
-        Labels.
-    sequence_length :
-        Number of time-steps per sequence for the deep model.
-    n_trials_for_pruning :
-        How many intermediate evaluation steps to report during training
-        (spaced evenly across epochs) for the pruner.
+    suggest_fn :
+        Search-space function (``suggest_lstm_params`` or ``suggest_tcn_params``).
+    model_builder :
+        Callable that accepts ``(input_size, num_classes, **hp)`` and returns a
+        :class:`torch.nn.Module`.
     """
+    import torch
+    import torch.nn.functional as F
 
-    def __init__(
-        self,
-        X: np.ndarray,
-        y: np.ndarray,
-        sequence_length: int = 32,
-        n_trials_for_pruning: int = 5,
-    ) -> None:
-        self.X = X
-        self.y = y
-        self.sequence_length = sequence_length
-        self.n_trials_for_pruning = n_trials_for_pruning
+    hp = suggest_fn(trial)
+    batch_size = hp.pop("batch_size")
+    num_epochs = hp.pop("num_epochs")
+    learning_rate = hp.pop("learning_rate")
+    hp.pop("hidden_size", None)    # used internally by builders, not passed
+    hp.pop("num_layers", None)
 
-    def __call__(self, trial: optuna.Trial) -> float:
-        params = suggest_deep_model_params(trial)
-        model_type = params.pop("model_type")
-        batch_size = params.pop("batch_size")
-        num_epochs = params.pop("num_epochs")
-        learning_rate = params.pop("learning_rate")
-        channel_sizes = params.pop("channel_sizes", None)
+    # Prepare sequences
+    train_loader = prepare_sequences(X, y, sequence_length, batch_size=batch_size)
+    split = int(0.8 * len(X) // sequence_length * sequence_length)
+    X_tr, X_val = X[:split], X[split:]
+    y_tr, y_val = y[:split], y[split:]
 
-        # Prepare sequences
-        train_loader = prepare_sequences(
-            self.X, self.y, self.sequence_length, batch_size=batch_size
-        )
-        # Use a subset for validation during tuning
-        split = int(0.8 * len(self.X) // self.sequence_length * self.sequence_length)
-        X_val = self.X[split:]
-        y_val = self.y[split:]
-        X_tr = self.X[:split]
-        y_tr = self.y[:split]
+    if len(X_tr) < sequence_length:
+        raise optuna.TrialPruned("Not enough data for sequence length")
 
-        if len(X_tr) < self.sequence_length:
-            raise optuna.TrialPruned("Not enough data for sequence length")
+    val_loader = prepare_sequences(X_val, y_val, sequence_length, batch_size=batch_size)
+    tr_loader = prepare_sequences(X_tr, y_tr, sequence_length, batch_size=batch_size)
 
-        val_loader = prepare_sequences(
-            X_val, y_val, self.sequence_length, batch_size=batch_size
-        )
-        tr_loader = prepare_sequences(
-            X_tr, y_tr, self.sequence_length, batch_size=batch_size
-        )
+    input_size = X.shape[1]
+    num_classes = len(np.unique(y))
+    model = model_builder(input_size=input_size, num_classes=num_classes, **hp)
 
-        # Build model
-        input_size = self.X.shape[1]
-        num_classes = len(np.unique(self.y))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-        if model_type == "lstm":
-            from models.deep import LSTMClassifier
-            model = LSTMClassifier(
-                input_size=input_size,
-                hidden_size=params["hidden_size"],
-                num_layers=params["num_layers"],
-                num_classes=num_classes,
-                dropout_probability=params["dropout_probability"],
-            )
-        else:
-            from models.deep import TCNClassifier
-            model = TCNClassifier(
-                input_size=input_size,
-                channel_sizes=channel_sizes or [32, 64, 64],
-                num_classes=num_classes,
-                kernel_size=params.get("kernel_size", 3),
-                dropout_probability=params["dropout_probability"],
-            )
+    report_interval = max(1, num_epochs // n_trials_for_pruning)
+    best_val_acc = 0.0
 
-        # Training with intermediate reporting for pruning
-        import torch
-        import torch.nn as nn
-        import torch.nn.functional as F
+    for epoch in range(num_epochs):
+        model.train()
+        for batch_inputs, batch_labels in tr_loader:
+            batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
+            optimizer.zero_grad()
+            loss = F.cross_entropy(model(batch_inputs), batch_labels)
+            loss.backward()
+            optimizer.step()
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = model.to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        if (epoch + 1) % report_interval == 0 or epoch == num_epochs - 1:
+            model.eval()
+            correct = total = 0
+            with torch.no_grad():
+                for batch_inputs, batch_labels in val_loader:
+                    batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
+                    logits = model(batch_inputs)
+                    correct += (logits.argmax(1) == batch_labels).sum().item()
+                    total += batch_labels.size(0)
+            val_acc = correct / total if total > 0 else 0.0
+            best_val_acc = max(best_val_acc, val_acc)
+            trial.report(val_acc, step=epoch)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
 
-        report_interval = max(1, num_epochs // self.n_trials_for_pruning)
-        best_val_acc = 0.0
-
-        for epoch in range(num_epochs):
-            model.train()
-            for batch_inputs, batch_labels in tr_loader:
-                batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
-                optimizer.zero_grad()
-                loss = F.cross_entropy(model(batch_inputs), batch_labels)
-                loss.backward()
-                optimizer.step()
-
-            # Validation
-            if (epoch + 1) % report_interval == 0 or epoch == num_epochs - 1:
-                model.eval()
-                correct = 0
-                total = 0
-                with torch.no_grad():
-                    for batch_inputs, batch_labels in val_loader:
-                        batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
-                        logits = model(batch_inputs)
-                        correct += (logits.argmax(1) == batch_labels).sum().item()
-                        total += batch_labels.size(0)
-                val_acc = correct / total if total > 0 else 0.0
-                best_val_acc = max(best_val_acc, val_acc)
-
-                trial.report(val_acc, step=epoch)
-                if trial.should_prune():
-                    raise optuna.TrialPruned()
-
-        return best_val_acc
+    return best_val_acc

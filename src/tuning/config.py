@@ -15,8 +15,10 @@ class TuningCategory(StrEnum):
     SENSOR_WINDOWS = "sensor_windows"
     FEATURES = "features"
     FEATURE_SELECTION = "feature_selection"
-    CLASSICAL_MODELS = "classical_models"
-    DEEP_MODELS = "deep_models"
+    RANDOM_FOREST = "random_forest"
+    XGBOOST = "xgboost"
+    LSTM = "lstm"
+    TCN = "tcn"
 
 
 # Convenience: all categories in a single tuple

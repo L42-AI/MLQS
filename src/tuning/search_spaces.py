@@ -174,80 +174,65 @@ def suggest_feature_selection_params(trial: optuna.Trial) -> dict:
     return params
 
 
-def suggest_classical_model_params(
-    trial: optuna.Trial, model_name: str = "random_forest"
-) -> dict:
-    """Sample classical ML hyperparameters.
-
-    Parameters
-    ----------
-    model_name :
-        ``"random_forest"`` or ``"xgboost"``.
-    """
-    params: dict = {"model_name": model_name}
-
-    if model_name == "random_forest":
-        params["n_estimators"] = trial.suggest_int("rf_n_estimators", 50, 500, step=25)
-        params["max_depth"] = trial.suggest_int("rf_max_depth", 3, 30)
-        params["min_samples_split"] = trial.suggest_int("rf_min_samples_split", 2, 20)
-        params["min_samples_leaf"] = trial.suggest_int("rf_min_samples_leaf", 1, 10)
-        params["max_features"] = trial.suggest_categorical(
-            "rf_max_features", ["sqrt", "log2", None]
-        )
-        # Bootstrap choice
-        params["bootstrap"] = trial.suggest_categorical("rf_bootstrap", [True, False])
-
-    elif model_name == "xgboost":
-        params["n_estimators"] = trial.suggest_int("xgb_n_estimators", 50, 500, step=25)
-        params["learning_rate"] = trial.suggest_float(
-            "xgb_learning_rate", 0.01, 0.3, log=True
-        )
-        params["max_depth"] = trial.suggest_int("xgb_max_depth", 3, 12)
-        params["subsample"] = trial.suggest_float("xgb_subsample", 0.6, 1.0)
-        params["colsample_bytree"] = trial.suggest_float(
-            "xgb_colsample_bytree", 0.6, 1.0
-        )
-        params["gamma"] = trial.suggest_float("xgb_gamma", 0.0, 5.0)
-        params["reg_alpha"] = trial.suggest_float("xgb_reg_alpha", 0.0, 2.0, log=True)
-        params["reg_lambda"] = trial.suggest_float(
-            "xgb_reg_lambda", 0.0, 2.0, log=True
-        )
-        params["min_child_weight"] = trial.suggest_int("xgb_min_child_weight", 1, 10)
-
-    return params
+def suggest_rf_params(trial: optuna.Trial) -> dict:
+    """Sample Random Forest hyperparameters."""
+    return {
+        "n_estimators": trial.suggest_int("n_estimators", 50, 500, step=25),
+        "max_depth": trial.suggest_int("max_depth", 3, 30),
+        "min_samples_split": trial.suggest_int("min_samples_split", 2, 20),
+        "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 10),
+        "max_features": trial.suggest_categorical(
+            "max_features", ["sqrt", "log2", None]
+        ),
+        "bootstrap": trial.suggest_categorical("bootstrap", [True, False]),
+    }
 
 
-def suggest_deep_model_params(trial: optuna.Trial) -> dict:
-    """Sample deep-learning hyperparameters (LSTM / TCN)."""
-    params: dict = {}
+def suggest_xgb_params(trial: optuna.Trial) -> dict:
+    """Sample XGBoost hyperparameters."""
+    return {
+        "n_estimators": trial.suggest_int("n_estimators", 50, 500, step=25),
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+        "max_depth": trial.suggest_int("max_depth", 3, 12),
+        "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+        "gamma": trial.suggest_float("gamma", 0.0, 5.0),
+        "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 2.0, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 0.0, 2.0, log=True),
+        "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+    }
 
-    params["model_type"] = trial.suggest_categorical("model_type", ["lstm", "tcn"])
 
-    # Shared params
-    params["hidden_size"] = trial.suggest_int("hidden_size", 32, 256, step=16)
-    params["num_layers"] = trial.suggest_int("num_layers", 1, 4)
-    params["dropout_probability"] = trial.suggest_float(
-        "dropout_probability", 0.0, 0.5
+def suggest_lstm_params(trial: optuna.Trial) -> dict:
+    """Sample LSTM hyperparameters."""
+    return {
+        "hidden_size": trial.suggest_int("hidden_size", 32, 256, step=16),
+        "num_layers": trial.suggest_int("num_layers", 1, 4),
+        "dropout": trial.suggest_float("dropout", 0.0, 0.5),
+        "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True),
+        "num_epochs": trial.suggest_int("num_epochs", 20, 200, step=10),
+        "batch_size": trial.suggest_categorical("batch_size", [16, 32, 64, 128]),
+    }
+
+
+def suggest_tcn_params(trial: optuna.Trial) -> dict:
+    """Sample TCN hyperparameters."""
+    channel_config = trial.suggest_categorical(
+        "channel_config", ["small", "medium", "large"]
     )
-    params["learning_rate"] = trial.suggest_float(
-        "learning_rate", 1e-4, 1e-2, log=True
-    )
-    params["num_epochs"] = trial.suggest_int("num_epochs", 20, 200, step=10)
-    params["batch_size"] = trial.suggest_categorical(
-        "batch_size", [16, 32, 64, 128]
-    )
-
-    # TCN-specific
-    if params["model_type"] == "tcn":
-        params["kernel_size"] = trial.suggest_int("kernel_size", 2, 5)
-        channel_config = trial.suggest_categorical(
-            "channel_config", ["small", "medium", "large"]
-        )
-        channel_map = {
-            "small": [16, 32, 32],
-            "medium": [32, 64, 64],
-            "large": [64, 128, 128],
-        }
-        params["channel_sizes"] = channel_map[channel_config]
-
-    return params
+    channel_map = {
+        "small": [16, 32, 32],
+        "medium": [32, 64, 64],
+        "large": [64, 128, 128],
+    }
+    return {
+        "hidden_size": trial.suggest_int("hidden_size", 32, 256, step=16),
+        "num_layers": trial.suggest_int("num_layers", 1, 4),
+        "dropout": trial.suggest_float("dropout", 0.0, 0.5),
+        "kernel_size": trial.suggest_int("kernel_size", 2, 5),
+        "channel_config": channel_config,
+        "channel_sizes": channel_map[channel_config],
+        "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True),
+        "num_epochs": trial.suggest_int("num_epochs", 20, 200, step=10),
+        "batch_size": trial.suggest_categorical("batch_size", [16, 32, 64, 128]),
+    }

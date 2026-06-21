@@ -1,5 +1,6 @@
 """Deep learning models (LSTM / TCN) in PyTorch."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -209,9 +210,17 @@ def build_deep_classifier(
     hidden_size: int = 64,
     num_layers: int = 2,
     dropout_probability: float = 0.2,
+    kernel_size: int = 3,
+    channel_sizes: Sequence[int] | None = None,
 ) -> nn.Module:
     if model_type == "lstm":
         return LSTMClassifier(input_size, hidden_size, num_layers, num_classes, dropout_probability)
     elif model_type == "tcn":
-        return TCNClassifier(input_size, num_classes=num_classes, dropout_probability=dropout_probability)
+        return TCNClassifier(
+            input_size,
+            num_classes=num_classes,
+            kernel_size=kernel_size,
+            dropout_probability=dropout_probability,
+            channel_sizes=channel_sizes,
+        )
     raise ValueError(f"Unknown deep model type: {model_type}")
