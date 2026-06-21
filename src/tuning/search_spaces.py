@@ -36,6 +36,9 @@ def suggest_preprocessing_params(trial: optuna.Trial) -> dict:
             "filter_window_length", 5, 25, step=2
         )
         params["filter_polyorder"] = trial.suggest_int("filter_polyorder", 1, 5)
+        # polyorder must be < window_length — clamp so this combo never crashes.
+        if params["filter_polyorder"] >= params["filter_window_length"]:
+            params["filter_polyorder"] = params["filter_window_length"] - 1
 
     params["imputation_method"] = trial.suggest_categorical(
         "imputation_method", ["interpolate", "ffill", "knn"]
@@ -124,14 +127,22 @@ def suggest_sensor_window_params(trial: optuna.Trial) -> dict:
 
 
 def suggest_feature_params(trial: optuna.Trial) -> dict:
-    """Sample boolean feature-domain toggles."""
-    return {
-        "time_domain": trial.suggest_categorical("time_domain", [True, False]),
-        "frequency_domain": trial.suggest_categorical("frequency_domain", [True, False]),
-        "statistical": trial.suggest_categorical("statistical", [True, False]),
-        "magnitude_channels": trial.suggest_categorical("magnitude_channels", [True, False]),
-        "cross_sensor_features": trial.suggest_categorical("cross_sensor_features", [True, False]),
-    }
+    """Sample feature-domain toggles + frequency-band boundaries."""
+    params: dict = {}
+
+    params["time_domain"] = trial.suggest_categorical("time_domain", [True, False])
+    params["frequency_domain"] = trial.suggest_categorical("frequency_domain", [True, False])
+    params["statistical"] = trial.suggest_categorical("statistical", [True, False])
+    params["magnitude_channels"] = trial.suggest_categorical("magnitude_channels", [True, False])
+    params["cross_sensor_features"] = trial.suggest_categorical("cross_sensor_features", [True, False])
+
+    # Frequency-band boundaries — 3 cut points that partition 0.5–30 Hz
+    # into 4 bands.  Independently suggested, then sorted in the builder.
+    params["band_boundary_1"] = trial.suggest_float("band_boundary_1", 1.0, 10.0)
+    params["band_boundary_2"] = trial.suggest_float("band_boundary_2", 3.0, 20.0)
+    params["band_boundary_3"] = trial.suggest_float("band_boundary_3", 8.0, 28.0)
+
+    return params
 
 
 def suggest_feature_selection_params(trial: optuna.Trial) -> dict:
